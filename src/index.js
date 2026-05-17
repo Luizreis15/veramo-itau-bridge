@@ -390,7 +390,7 @@ app.post('/v1/charges', async (req, reply) => {
 // Body esperado: { pix_key: string, webhook_url: string }
 //
 app.post('/v1/webhook-register', async (req, reply) => {
-  const { pix_key, webhook_url } = req.body ?? {}
+  const { pix_key, webhook_url, api_base_url } = req.body ?? {}
   if (!pix_key)     return reply.code(400).send({ error: 'pix_key é obrigatório' })
   if (!webhook_url) return reply.code(400).send({ error: 'webhook_url é obrigatório' })
 
@@ -400,9 +400,12 @@ app.post('/v1/webhook-register', async (req, reply) => {
     return reply.code(502).send({ error: err.message })
   }
 
-  // ITAU_BASE_URL já termina com /v2 — não duplicar
-  const base  = process.env.ITAU_BASE_URL.replace(/\/$/, '')
-  const url   = `${base}/webhook/${encodeURIComponent(pix_key)}`
+  // api_base_url no body sobrescreve o default (útil para testar paths alternativos)
+  // Default: ITAU_WEBHOOK_BASE_URL ?? derivado do ITAU_BASE_URL trocando o produto por /pix/v2
+  const defaultWebhookBase = process.env.ITAU_WEBHOOK_BASE_URL
+    ?? process.env.ITAU_BASE_URL.replace(/pix_recebimentos_conciliacoes\/v2.*$/, 'pix/v2')
+  const base = (api_base_url ?? defaultWebhookBase).replace(/\/$/, '')
+  const url  = `${base}/webhook/${encodeURIComponent(pix_key)}`
   app.log.info(`[webhook-register] PUT ${url}`)
   const start = Date.now()
 
