@@ -400,8 +400,10 @@ app.post('/v1/webhook-register', async (req, reply) => {
     return reply.code(502).send({ error: err.message })
   }
 
+  // ITAU_BASE_URL já termina com /v2 — não duplicar
   const base  = process.env.ITAU_BASE_URL.replace(/\/$/, '')
-  const url   = `${base}/v2/webhook/${encodeURIComponent(pix_key)}`
+  const url   = `${base}/webhook/${encodeURIComponent(pix_key)}`
+  app.log.info(`[webhook-register] PUT ${url}`)
   const start = Date.now()
 
   let res
