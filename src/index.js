@@ -384,6 +384,55 @@ app.post('/v1/charges', async (req, reply) => {
   }
 })
 
+// ── POST /v1/webhook-register ─────────────────────────────────────────────────
+//
+// Registra o webhook PIX no Itaú (PUT /v2/webhook/{chave}).
+// Body esperado: { pix_key: string, webhook_url: string }
+//
+app.post('/v1/webhook-register', async (req, reply) => {
+  const { pix_key, webhook_url } = req.body ?? {}
+  if (!pix_key)     return reply.code(400).send({ error: 'pix_key é obrigatório' })
+  if (!webhook_url) return reply.code(400).send({ error: 'webhook_url é obrigatório' })
+
+  const agent = buildMtlsAgent()
+  let token
+  try { token = await getOAuthToken(agent) } catch (err) {
+    return reply.code(502).send({ error: err.message })
+  }
+
+  const base  = process.env.ITAU_BASE_URL.replace(/\/$/, '')
+  const url   = `${base}/v2/webhook/${encodeURIComponent(pix_key)}`
+  const start = Date.now()
+
+  let res
+  try {
+    res = await axios.put(url, { webhookUrl: webhook_url }, {
+      headers: {
+        'Authorization':        `Bearer ${token}`,
+        'x-itau-apikey':        process.env.ITAU_API_KEY,
+        'x-itau-correlationID': randomUUID(),
+        'Content-Type':         'application/json',
+      },
+      httpsAgent:     agent,
+      validateStatus: () => true,
+      timeout:        30_000,
+    })
+  } catch (err) {
+    return reply.code(502).send({ error: `Rede inacessível: ${err.message}` })
+  }
+
+  app.log.info(`[webhook-register] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
+
+  return {
+    success:     res.status >= 200 && res.status < 300,
+    status_code: res.status,
+    pix_key,
+    webhook_url,
+    raw_response: res.data,
+    latency_ms:  Date.now() - start,
+  }
+})
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 const port = Number(process.env.PORT ?? 3001)
 const host = process.env.HOST ?? '0.0.0.0'
