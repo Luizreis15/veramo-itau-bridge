@@ -1,0 +1,364 @@
+import 'dotenv/config'
+import Fastify from 'fastify'
+import https   from 'https'
+import axios   from 'axios'
+import { randomUUID } from 'crypto'
+
+// ── Validação de envs na inicialização ────────────────────────────────────────
+const REQUIRED = [
+  'ITAU_CLIENT_ID',
+  'ITAU_CLIENT_SECRET',
+  'ITAU_CERT_PEM',
+  'ITAU_KEY_PEM',
+  'ITAU_API_KEY',
+  'ITAU_BASE_URL',
+  'BRIDGE_ACCESS_TOKEN',
+]
+
+const missing = REQUIRED.filter(k => !process.env[k])
+if (missing.length > 0) {
+  console.error(`[bridge] Envs ausentes: ${missing.join(', ')}`)
+  process.exit(1)
+}
+
+// ── Helpers compartilhados ────────────────────────────────────────────────────
+
+/** Cria https.Agent com mTLS — equivalente ao cert tuple do requests.post(..., cert=cert) */
+function buildMtlsAgent() {
+  return new https.Agent({
+    cert: process.env.ITAU_CERT_PEM,
+    key:  process.env.ITAU_KEY_PEM,
+  })
+}
+
+/**
+ * Obtém access_token OAuth do Itaú.
+ * Replica bolecode_service.py get_access_token() — apenas Content-Type, sem x-itau-apikey.
+ * Lança Error com mensagem sanitizada em caso de falha.
+ */
+async function getOAuthToken(agent) {
+  const tokenUrl = process.env.ITAU_TOKEN_URL ?? 'https://sts.itau.com.br/api/oauth/token'
+
+  const body = new URLSearchParams({
+    grant_type:    'client_credentials',
+    client_id:     process.env.ITAU_CLIENT_ID,
+    client_secret: process.env.ITAU_CLIENT_SECRET,
+  }).toString()
+
+  let res
+  try {
+    res = await axios.post(tokenUrl, body, {
+      headers:        { 'Content-Type': 'application/x-www-form-urlencoded' },
+      httpsAgent:     agent,
+      validateStatus: () => true,
+      timeout:        30_000,
+    })
+  } catch (err) {
+    const msg = err?.message ?? ''
+    const isTls = /tls|certificate|handshake|ssl|x509|peer|verify/i.test(msg)
+    throw new Error(isTls ? 'mTLS handshake falhou ao obter token OAuth.' : 'Rede inacessível ao obter token OAuth.')
+  }
+
+  if (res.status !== 200) {
+    throw new Error(`Itaú retornou HTTP ${res.status} no OAuth — verifique client_id/secret.`)
+  }
+
+  const token = res.data?.access_token
+  if (!token) throw new Error('Resposta OAuth sem access_token.')
+  return token
+}
+
+// ── Formatação de valor (17 dígitos — centavos com zero-padding) ─────────────
+// Equivalente a bolecode_service.py _format_value_17_digits
+function formatValue17(amountReais) {
+  const cents = Math.round(amountReais * 100)
+  return String(cents).padStart(17, '0')
+}
+
+// ── Data + N dias (YYYY-MM-DD) ────────────────────────────────────────────────
+function addDays(dateStr, days) {
+  const d = new Date(dateStr + 'T12:00:00Z')
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().split('T')[0]
+}
+
+// ── Sanitização de texto (proibidos do Itaú) ─────────────────────────────────
+// Equivalente a bolecode_service.py _sanitize_text
+function sanitizeText(text) {
+  if (!text) return ''
+  const forbidden = ['[', ']', ':', '<', '>', '&', ';', "'", '"', '`', '(', ')', '#', '*', '/', '|', 'ü']
+  let s = text
+  for (const c of forbidden) s = s.replaceAll(c, '')
+  for (const word of ['http', 'javascript', 'alert']) {
+    s = s.replace(new RegExp(word, 'gi'), '')
+  }
+  return s.trim()
+}
+
+// ── Fastify ───────────────────────────────────────────────────────────────────
+const app = Fastify({ logger: { level: 'info' } })
+
+app.addHook('preHandler', async (req, reply) => {
+  if (req.url === '/healthz') return
+  if (req.headers['x-bridge-token'] !== process.env.BRIDGE_ACCESS_TOKEN) {
+    return reply.code(401).send({ error: 'Unauthorized.' })
+  }
+})
+
+// ── GET /healthz ──────────────────────────────────────────────────────────────
+app.get('/healthz', async () => ({ ok: true, service: 'veramo-itau-bridge' }))
+
+// ── POST /v1/oauth-test ───────────────────────────────────────────────────────
+app.post('/v1/oauth-test', async (req, reply) => {
+  const tokenUrl = process.env.ITAU_TOKEN_URL ?? 'https://sts.itau.com.br/api/oauth/token'
+  const agent    = buildMtlsAgent()
+  const start    = Date.now()
+
+  let statusCode, sanitizedBody
+
+  try {
+    const res = await axios.post(tokenUrl, new URLSearchParams({
+      grant_type:    'client_credentials',
+      client_id:     process.env.ITAU_CLIENT_ID,
+      client_secret: process.env.ITAU_CLIENT_SECRET,
+    }).toString(), {
+      headers:        { 'Content-Type': 'application/x-www-form-urlencoded' },
+      httpsAgent:     agent,
+      validateStatus: () => true,
+      timeout:        30_000,
+    })
+
+    statusCode = res.status
+    const data = res.data
+    sanitizedBody = typeof data === 'object' && data !== null
+      ? Object.fromEntries(Object.entries(data).map(([k, v]) => [k, k === 'access_token' ? '****' : v]))
+      : { raw_text: String(data).slice(0, 400) }
+
+  } catch (err) {
+    const msg = err?.message ?? ''
+    const isTls = /tls|certificate|handshake|ssl|x509|peer|verify/i.test(msg)
+    return reply.code(502).send({
+      success: false, status_code: null,
+      error: isTls ? 'mTLS handshake falhou.' : `Rede inacessível: ${msg}`,
+      latency_ms: Date.now() - start,
+    })
+  }
+
+  return {
+    success:         statusCode >= 200 && statusCode < 300,
+    status_code:     statusCode,
+    token_url:       tokenUrl,
+    mtls_used:       true,
+    headers_sent:    ['Content-Type'],
+    body_keys_sent:  ['grant_type', 'client_id', 'client_secret'],
+    response_body:   sanitizedBody,
+    latency_ms:      Date.now() - start,
+  }
+})
+
+// ── POST /v1/charges ──────────────────────────────────────────────────────────
+//
+// Replica bolecode_service.py _emitir_bolecode_empresa_pj linha a linha.
+//
+// Body esperado:
+// {
+//   amount:        number,           // valor em reais (ex: 150.00)
+//   due_date:      string,           // YYYY-MM-DD
+//   nosso_numero:  string,           // 8 dígitos
+//   payer: {
+//     nome:        string,
+//     tipo_pessoa: "J" | "F",        // default "J"
+//     cnpj:        string,           // 14 dígitos (sem máscara)
+//     endereco: {
+//       logradouro: string,
+//       bairro:     string,
+//       cidade:     string,
+//       uf:         string,          // 2 letras
+//       cep:        string,          // 8 dígitos
+//     }
+//   },
+//   beneficiario_id: string,
+//   pix_key:         string,
+//   carteira_code:   string,         // default "109"
+//   texto_ref:       string,         // até 6 chars (texto_seu_numero / texto_uso_beneficiario)
+//   mensagem:        string,         // lista_mensagem_cobranca
+//   correlation_id:  string,         // opcional — x-itau-correlationID
+// }
+//
+app.post('/v1/charges', async (req, reply) => {
+  const {
+    amount, due_date, nosso_numero, correlation_id,
+    payer, beneficiario_id, pix_key,
+    carteira_code, texto_ref, mensagem,
+  } = req.body ?? {}
+
+  // ── Validação de input ──────────────────────────────────────────────────
+  const errors = []
+  if (!amount || amount <= 0)       errors.push('amount deve ser > 0')
+  if (!due_date)                    errors.push('due_date é obrigatório (YYYY-MM-DD)')
+  if (!nosso_numero)                errors.push('nosso_numero é obrigatório')
+  if (!payer?.nome)                 errors.push('payer.nome é obrigatório')
+  if (!payer?.cnpj)                 errors.push('payer.cnpj é obrigatório')
+  if (!beneficiario_id)             errors.push('beneficiario_id é obrigatório')
+  if (!pix_key)                     errors.push('pix_key é obrigatório')
+  if (errors.length > 0) return reply.code(400).send({ error: errors.join('; ') })
+
+  // ── Preparação — equivalente ao _emitir_bolecode_empresa_pj ────────────
+  const textoRef6        = (texto_ref ? String(texto_ref).slice(0, 6) : '000000')
+  const mensagemLimpa    = sanitizeText(mensagem || 'Cobranca')
+  const valorFormatado   = formatValue17(amount)
+  const dataEmissao      = new Date().toISOString().split('T')[0]
+  const dataLimite       = addDays(due_date, 30)          // data_limite_pagamento = vencimento + 30d
+  const cnpjDigits       = payer.cnpj.replace(/\D/g, '')
+  const cep              = (payer.endereco?.cep ?? '01000000').replace(/\D/g, '').padEnd(8, '0').slice(0, 8)
+  const correlationIdStr = correlation_id ?? randomUUID()
+  const carteira         = carteira_code ?? '109'
+
+  // ── Payload — replica exata do legado ──────────────────────────────────
+  const payload = {
+    etapa_processo_boleto: 'efetivacao',
+    beneficiario: { id_beneficiario: beneficiario_id },
+    dado_boleto: {
+      tipo_boleto:                    'a vista',
+      descricao_instrumento_cobranca: 'boleto_pix',
+      texto_seu_numero:               textoRef6,
+      codigo_carteira:                carteira,
+      valor_total_titulo:             valorFormatado,
+      codigo_especie:                 '01',
+      data_emissao:                   dataEmissao,
+      pagador: {
+        pessoa: {
+          nome_pessoa:  sanitizeText(payer.nome),
+          tipo_pessoa: {
+            codigo_tipo_pessoa: payer.tipo_pessoa ?? 'J',
+            numero_cadastro_nacional_pessoa_juridica: cnpjDigits || '00000000000000',
+          },
+        },
+        endereco: {
+          nome_logradouro: sanitizeText(payer.endereco?.logradouro ?? 'Rua Principal 100'),
+          nome_bairro:     sanitizeText(payer.endereco?.bairro     ?? 'Centro'),
+          nome_cidade:     sanitizeText(payer.endereco?.cidade     ?? 'Sao Paulo'),
+          sigla_UF:        payer.endereco?.uf  ?? 'SP',
+          numero_CEP:      cep,
+        },
+      },
+      dados_individuais_boleto: [{
+        numero_nosso_numero:    String(nosso_numero),
+        data_vencimento:        due_date,
+        texto_uso_beneficiario: textoRef6,
+        valor_titulo:           valorFormatado,
+        data_limite_pagamento:  dataLimite,
+      }],
+      lista_mensagem_cobranca: [{ mensagem: mensagemLimpa }],
+    },
+    dados_qrcode: { chave: pix_key },
+  }
+
+  // ── OAuth + mTLS ────────────────────────────────────────────────────────
+  const agent = buildMtlsAgent()
+  let token
+  try {
+    token = await getOAuthToken(agent)
+  } catch (err) {
+    return reply.code(502).send({ error: err.message })
+  }
+
+  // ── POST ao Itaú Bolecode ───────────────────────────────────────────────
+  // Headers: Bearer + x-itau-apikey + correlationID + Content-Type: application/json
+  // (equivalente a _emitir_bolecode_empresa_pj linhas 311-316)
+  const url   = `${process.env.ITAU_BASE_URL.replace(/\/$/, '')}/boletos_pix`
+  const start = Date.now()
+
+  let res
+  try {
+    res = await axios.post(url, payload, {
+      headers: {
+        'Authorization':       `Bearer ${token}`,
+        'x-itau-apikey':       process.env.ITAU_API_KEY,
+        'x-itau-correlationID': correlationIdStr,
+        'Content-Type':        'application/json',
+      },
+      httpsAgent:     agent,
+      validateStatus: () => true,
+      timeout:        30_000,
+    })
+  } catch (err) {
+    return reply.code(502).send({ error: `Rede inacessível ao criar Bolecode: ${err.message}` })
+  }
+
+  const latencyMs    = Date.now() - start
+  const statusCode   = res.status
+  const responseData = res.data
+
+  app.log.info(`[charges] Itaú respondeu HTTP ${statusCode} em ${latencyMs}ms`)
+
+  // ── HTTP 202 — processamento assíncrono (mesmo que legado) ──────────────
+  if (statusCode === 202) {
+    return {
+      success:      true,
+      status:       'processing',
+      message:      'Bolecode em processamento assíncrono. Consulte em instantes.',
+      nosso_numero: String(nosso_numero),
+      due_date,
+      amount,
+      latency_ms:   latencyMs,
+    }
+  }
+
+  // ── Erro do Itaú — extrair mensagem (mesmo que legado) ─────────────────
+  if (statusCode >= 400) {
+    const detail = responseData?.detalhe_excecao?.[0]?.mensagem
+                ?? responseData?.mensagem
+                ?? responseData?.erros?.[0]?.mensagem
+                ?? ''
+    const errorMsg = detail ? `HTTP ${statusCode} — ${detail}` : `HTTP ${statusCode}`
+    app.log.error(`[charges] erro Itaú: ${errorMsg}`)
+    return reply.code(statusCode >= 500 ? 502 : 422).send({
+      success:      false,
+      status_code:  statusCode,
+      error:        errorMsg,
+      raw_response: responseData,
+      latency_ms:   latencyMs,
+    })
+  }
+
+  // ── Parsing de resposta — replica exata do legado ──────────────────────
+  // data = response_data.get('data', response_data)
+  // dados_individuais = dado_boleto.get('dados_individuais_boleto', [{}])[0]
+  // dados_qrcode = data.get('dados_qrcode', {})
+  const data            = responseData?.data ?? responseData
+  const dadoBoleto      = data?.dado_boleto  ?? {}
+  const dadosIndividuais = dadoBoleto?.dados_individuais_boleto?.[0] ?? {}
+  const dadosQrcode     = data?.dados_qrcode ?? {}
+
+  if (!dadosQrcode.txid) {
+    app.log.warn('[charges] pix_txid vazio no retorno Itaú.')
+  }
+
+  return {
+    success:           true,
+    status_code:       statusCode,
+    provider_charge_id: dadosIndividuais.id_boleto_individual ?? null,
+    nosso_numero:      dadosIndividuais.numero_nosso_numero    ?? String(nosso_numero),
+    txid:              dadosQrcode.txid    ?? null,
+    pix_copy_paste:    dadosQrcode.emv     ?? null,
+    pix_qr_code:       dadosQrcode.base64  ?? null,
+    boleto_url:        dadosIndividuais.numero_linha_digitavel ?? null,
+    due_date:          dadosIndividuais.data_vencimento        ?? due_date,
+    amount,
+    latency_ms:        latencyMs,
+    raw_response:      responseData,
+  }
+})
+
+// ── Start ─────────────────────────────────────────────────────────────────────
+const port = Number(process.env.PORT ?? 3001)
+const host = process.env.HOST ?? '0.0.0.0'
+
+try {
+  await app.listen({ port, host })
+  app.log.info(`veramo-itau-bridge pronto em http://${host}:${port}`)
+} catch (err) {
+  app.log.error(err)
+  process.exit(1)
+}
