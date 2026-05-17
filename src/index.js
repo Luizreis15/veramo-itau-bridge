@@ -23,17 +23,22 @@ if (missing.length > 0) {
 
 // ── Helpers compartilhados ────────────────────────────────────────────────────
 
-/** Normaliza PEM: Railway às vezes armazena \n literal em vez de quebra real */
-function normalizePem(pem) {
+/**
+ * Normaliza PEM: converte \n literal → quebra real, e envolve com cabeçalhos
+ * se o conteúdo for apenas o corpo base64 sem -----BEGIN/END-----.
+ */
+function normalizePem(pem, type) {
   if (!pem) return pem
-  return pem.replace(/\\n/g, '\n')
+  let s = pem.replace(/\\n/g, '\n').trim()
+  if (s.startsWith('-----BEGIN')) return s + '\n'
+  return `-----BEGIN ${type}-----\n${s}\n-----END ${type}-----\n`
 }
 
 /** Cria https.Agent com mTLS — equivalente ao cert tuple do requests.post(..., cert=cert) */
 function buildMtlsAgent() {
   return new https.Agent({
-    cert: normalizePem(process.env.ITAU_CERT_PEM),
-    key:  normalizePem(process.env.ITAU_KEY_PEM),
+    cert: normalizePem(process.env.ITAU_CERT_PEM, 'CERTIFICATE'),
+    key:  normalizePem(process.env.ITAU_KEY_PEM,  'PRIVATE KEY'),
   })
 }
 
@@ -116,9 +121,9 @@ app.get('/healthz', async () => ({ ok: true, service: 'veramo-itau-bridge' }))
 
 // ── GET /v1/pem-check ─────────────────────────────────────────────────────────
 app.get('/v1/pem-check', async () => {
-  const analyzePem = (raw, label) => {
+  const analyzePem = (raw, label, type) => {
     if (!raw) return { label, present: false }
-    const normalized = normalizePem(raw)
+    const normalized = normalizePem(raw, type)
     return {
       label,
       present:            true,
@@ -131,8 +136,8 @@ app.get('/v1/pem-check', async () => {
     }
   }
   return {
-    cert: analyzePem(process.env.ITAU_CERT_PEM, 'ITAU_CERT_PEM'),
-    key:  analyzePem(process.env.ITAU_KEY_PEM,  'ITAU_KEY_PEM'),
+    cert: analyzePem(process.env.ITAU_CERT_PEM, 'ITAU_CERT_PEM', 'CERTIFICATE'),
+    key:  analyzePem(process.env.ITAU_KEY_PEM,  'ITAU_KEY_PEM',  'PRIVATE KEY'),
   }
 })
 
