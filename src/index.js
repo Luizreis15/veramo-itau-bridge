@@ -114,6 +114,28 @@ app.addHook('preHandler', async (req, reply) => {
 // ── GET /healthz ──────────────────────────────────────────────────────────────
 app.get('/healthz', async () => ({ ok: true, service: 'veramo-itau-bridge' }))
 
+// ── GET /v1/pem-check ─────────────────────────────────────────────────────────
+app.get('/v1/pem-check', async () => {
+  const analyzePem = (raw, label) => {
+    if (!raw) return { label, present: false }
+    const normalized = normalizePem(raw)
+    return {
+      label,
+      present:            true,
+      raw_length:         raw.length,
+      normalized_length:  normalized.length,
+      has_real_newlines:  raw.includes('\n'),
+      has_literal_slash_n: raw.includes('\\n'),
+      normalized_starts_with_begin: normalized.trimStart().startsWith('-----BEGIN'),
+      first_30_normalized: normalized.slice(0, 30).replace(/\n/g, '<LF>'),
+    }
+  }
+  return {
+    cert: analyzePem(process.env.ITAU_CERT_PEM, 'ITAU_CERT_PEM'),
+    key:  analyzePem(process.env.ITAU_KEY_PEM,  'ITAU_KEY_PEM'),
+  }
+})
+
 // ── POST /v1/oauth-test ───────────────────────────────────────────────────────
 app.post('/v1/oauth-test', async (req, reply) => {
   const tokenUrl = process.env.ITAU_TOKEN_URL ?? 'https://sts.itau.com.br/api/oauth/token'
