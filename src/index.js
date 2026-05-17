@@ -23,11 +23,17 @@ if (missing.length > 0) {
 
 // ── Helpers compartilhados ────────────────────────────────────────────────────
 
+/** Normaliza PEM: Railway às vezes armazena \n literal em vez de quebra real */
+function normalizePem(pem) {
+  if (!pem) return pem
+  return pem.replace(/\\n/g, '\n')
+}
+
 /** Cria https.Agent com mTLS — equivalente ao cert tuple do requests.post(..., cert=cert) */
 function buildMtlsAgent() {
   return new https.Agent({
-    cert: process.env.ITAU_CERT_PEM,
-    key:  process.env.ITAU_KEY_PEM,
+    cert: normalizePem(process.env.ITAU_CERT_PEM),
+    key:  normalizePem(process.env.ITAU_KEY_PEM),
   })
 }
 
