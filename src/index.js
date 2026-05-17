@@ -440,13 +440,15 @@ app.get('/v1/webhook-check', async (req, reply) => {
 
 // ── GET /v1/charge-status ─────────────────────────────────────────────────────
 //
-// Consulta o status de um boleto pelo nosso_numero.
-// Query: ?nosso_numero=12345678&beneficiario_id=xxx
+// Consulta o status de um boleto. Tenta múltiplos paths em sequência:
+//   1. GET /boletos_pix/{id_boleto_individual}   (provider_charge_id)
+//   2. GET /boletos_pix/{nosso_numero}            (nosso_numero no path)
+//   3. GET /boletos_pix?id_beneficiario=X&codigo_nosso_numero=Y
+// Query: ?nosso_numero=&beneficiario_id=  (+ opcional: &id_boleto=)
 //
 app.get('/v1/charge-status', async (req, reply) => {
-  const { nosso_numero, beneficiario_id } = req.query ?? {}
-  if (!nosso_numero)   return reply.code(400).send({ error: 'nosso_numero é obrigatório' })
-  if (!beneficiario_id) return reply.code(400).send({ error: 'beneficiario_id é obrigatório' })
+  const { nosso_numero, beneficiario_id, id_boleto } = req.query ?? {}
+  if (!nosso_numero && !id_boleto) return reply.code(400).send({ error: 'nosso_numero ou id_boleto é obrigatório' })
 
   const agent = buildMtlsAgent()
   let token
@@ -454,34 +456,41 @@ app.get('/v1/charge-status', async (req, reply) => {
     return reply.code(502).send({ error: err.message })
   }
 
-  const base  = process.env.ITAU_BASE_URL.replace(/\/$/, '')
-  const url   = `${base}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&nosso_numero=${encodeURIComponent(nosso_numero)}`
-  const start = Date.now()
-
-  let res
-  try {
-    res = await axios.get(url, {
-      headers: {
-        'Authorization':        `Bearer ${token}`,
-        'x-itau-apikey':        process.env.ITAU_API_KEY,
-        'x-itau-correlationID': randomUUID(),
-      },
-      httpsAgent:     agent,
-      validateStatus: () => true,
-      timeout:        30_000,
-    })
-  } catch (err) {
-    return reply.code(502).send({ error: `Rede inacessível: ${err.message}` })
+  const base    = process.env.ITAU_BASE_URL.replace(/\/$/, '')
+  const headers = {
+    'Authorization':        `Bearer ${token}`,
+    'x-itau-apikey':        process.env.ITAU_API_KEY,
+    'x-itau-correlationID': randomUUID(),
   }
 
-  app.log.info(`[charge-status] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
-
-  return {
-    status_code:  res.status,
-    nosso_numero,
-    raw_response: res.data,
-    latency_ms:   Date.now() - start,
+  // Candidatos de URL a tentar em ordem
+  const candidates = []
+  if (id_boleto)    candidates.push(`${base}/boletos_pix/${encodeURIComponent(id_boleto)}`)
+  if (nosso_numero) candidates.push(`${base}/boletos_pix/${encodeURIComponent(nosso_numero)}`)
+  if (nosso_numero && beneficiario_id) {
+    candidates.push(`${base}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&codigo_nosso_numero=${encodeURIComponent(nosso_numero)}`)
+    candidates.push(`${base}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&nosso_numero=${encodeURIComponent(nosso_numero)}`)
   }
+
+  const attempts = []
+  for (const url of candidates) {
+    const start = Date.now()
+    let res
+    try {
+      res = await axios.get(url, { headers, httpsAgent: agent, validateStatus: () => true, timeout: 15_000 })
+    } catch (err) {
+      attempts.push({ url, error: err.message })
+      continue
+    }
+    const latencyMs = Date.now() - start
+    attempts.push({ url, status: res.status })
+    app.log.info(`[charge-status] ${url} → HTTP ${res.status} em ${latencyMs}ms`)
+    if (res.status !== 404 && res.status !== 405) {
+      return { status_code: res.status, nosso_numero, raw_response: res.data, latency_ms: latencyMs }
+    }
+  }
+
+  return { status_code: null, nosso_numero, attempts, message: 'Nenhum path retornou dados.' }
 })
 
 // ── POST /v1/webhook-register ─────────────────────────────────────────────────
