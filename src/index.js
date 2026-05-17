@@ -384,6 +384,54 @@ app.post('/v1/charges', async (req, reply) => {
   }
 })
 
+// ── GET /v1/webhook-check ─────────────────────────────────────────────────────
+//
+// Consulta o webhook PIX registrado no Itaú para uma chave.
+// Query: ?pix_key=pix@secabc.org.br  (opcional: &api_base_url=...)
+//
+app.get('/v1/webhook-check', async (req, reply) => {
+  const { pix_key, api_base_url } = req.query ?? {}
+  if (!pix_key) return reply.code(400).send({ error: 'pix_key query param é obrigatório' })
+
+  const agent = buildMtlsAgent()
+  let token
+  try { token = await getOAuthToken(agent) } catch (err) {
+    return reply.code(502).send({ error: err.message })
+  }
+
+  // Testar os dois paths prováveis em sequência
+  const candidates = api_base_url
+    ? [api_base_url.replace(/\/$/, '')]
+    : [
+        process.env.ITAU_BASE_URL.replace(/\/$/, ''),                                       // pix_recebimentos_conciliacoes/v2
+        process.env.ITAU_BASE_URL.replace(/pix_recebimentos_conciliacoes\/v2.*$/, 'pix/v2'), // pix/v2
+      ]
+
+  const results = []
+  for (const base of candidates) {
+    const url = `${base}/webhook/${encodeURIComponent(pix_key)}`
+    let res
+    try {
+      res = await axios.get(url, {
+        headers: {
+          'Authorization':        `Bearer ${token}`,
+          'x-itau-apikey':        process.env.ITAU_API_KEY,
+          'x-itau-correlationID': randomUUID(),
+        },
+        httpsAgent:     agent,
+        validateStatus: () => true,
+        timeout:        15_000,
+      })
+    } catch (err) {
+      results.push({ base, url, error: err.message })
+      continue
+    }
+    results.push({ base, url, status: res.status, body: res.data })
+  }
+
+  return { results }
+})
+
 // ── POST /v1/webhook-register ─────────────────────────────────────────────────
 //
 // Registra o webhook PIX no Itaú (PUT /v2/webhook/{chave}).
