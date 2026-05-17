@@ -399,17 +399,23 @@ app.get('/v1/webhook-check', async (req, reply) => {
     return reply.code(502).send({ error: err.message })
   }
 
-  // Testar os dois paths prováveis em sequência
+  const apiRoot = process.env.ITAU_BASE_URL.replace(/\/pix_recebimentos_conciliacoes.*$/, '')
+
+  // Candidatos em ordem de probabilidade
   const candidates = api_base_url
-    ? [api_base_url.replace(/\/$/, '')]
+    ? [{ base: api_base_url.replace(/\/$/, ''), encode: true }]
     : [
-        process.env.ITAU_BASE_URL.replace(/\/$/, ''),                                       // pix_recebimentos_conciliacoes/v2
-        process.env.ITAU_BASE_URL.replace(/pix_recebimentos_conciliacoes\/v2.*$/, 'pix/v2'), // pix/v2
+        { base: `${apiRoot}/pix_recebimentos_conciliacoes/v2`, encode: true  },
+        { base: `${apiRoot}/pix_recebimentos_conciliacoes/v2`, encode: false },
+        { base: `${apiRoot}/boletoscash/v2`,                   encode: true  },
+        { base: `${apiRoot}/boletoscash/v2`,                   encode: false },
+        { base: `${apiRoot}/pix/v2`,                           encode: true  },
       ]
 
   const results = []
-  for (const base of candidates) {
-    const url = `${base}/webhook/${encodeURIComponent(pix_key)}`
+  for (const { base, encode } of candidates) {
+    const key = encode ? encodeURIComponent(pix_key) : pix_key
+    const url = `${base}/webhook/${key}`
     let res
     try {
       res = await axios.get(url, {
@@ -430,6 +436,52 @@ app.get('/v1/webhook-check', async (req, reply) => {
   }
 
   return { results }
+})
+
+// ── GET /v1/charge-status ─────────────────────────────────────────────────────
+//
+// Consulta o status de um boleto pelo nosso_numero.
+// Query: ?nosso_numero=12345678&beneficiario_id=xxx
+//
+app.get('/v1/charge-status', async (req, reply) => {
+  const { nosso_numero, beneficiario_id } = req.query ?? {}
+  if (!nosso_numero)   return reply.code(400).send({ error: 'nosso_numero é obrigatório' })
+  if (!beneficiario_id) return reply.code(400).send({ error: 'beneficiario_id é obrigatório' })
+
+  const agent = buildMtlsAgent()
+  let token
+  try { token = await getOAuthToken(agent) } catch (err) {
+    return reply.code(502).send({ error: err.message })
+  }
+
+  const base  = process.env.ITAU_BASE_URL.replace(/\/$/, '')
+  const url   = `${base}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&nosso_numero=${encodeURIComponent(nosso_numero)}`
+  const start = Date.now()
+
+  let res
+  try {
+    res = await axios.get(url, {
+      headers: {
+        'Authorization':        `Bearer ${token}`,
+        'x-itau-apikey':        process.env.ITAU_API_KEY,
+        'x-itau-correlationID': randomUUID(),
+      },
+      httpsAgent:     agent,
+      validateStatus: () => true,
+      timeout:        30_000,
+    })
+  } catch (err) {
+    return reply.code(502).send({ error: `Rede inacessível: ${err.message}` })
+  }
+
+  app.log.info(`[charge-status] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
+
+  return {
+    status_code:  res.status,
+    nosso_numero,
+    raw_response: res.data,
+    latency_ms:   Date.now() - start,
+  }
 })
 
 // ── POST /v1/webhook-register ─────────────────────────────────────────────────
