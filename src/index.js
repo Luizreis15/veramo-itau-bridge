@@ -302,6 +302,8 @@ app.post('/v1/charges', async (req, reply) => {
   const url   = `${process.env.ITAU_BASE_URL.replace(/\/$/, '')}/boletos_pix`
   const start = Date.now()
 
+  app.log.info(`[charges] POST ${url} | correlationID: ${correlationIdStr} | amount: ${amount} | nosso_numero: ${nosso_numero} | carteira: ${carteira}`)
+
   let res
   try {
     res = await axios.post(url, payload, {
@@ -313,9 +315,10 @@ app.post('/v1/charges', async (req, reply) => {
       },
       httpsAgent:     agent,
       validateStatus: () => true,
-      timeout:        30_000,
+      timeout:        60_000,
     })
   } catch (err) {
+    app.log.error(`[charges] timeout/erro na chamada boletos_pix após ${Date.now() - start}ms: ${err.message}`)
     return reply.code(502).send({ error: `Rede inacessível ao criar Bolecode: ${err.message}` })
   }
 
@@ -381,6 +384,75 @@ app.post('/v1/charges', async (req, reply) => {
     amount,
     latency_ms:        latencyMs,
     raw_response:      responseData,
+  }
+})
+
+// ── GET /v1/api-ping ──────────────────────────────────────────────────────────
+//
+// Diagnóstico rápido: testa conectividade mTLS com o endpoint boletos_pix do Itaú.
+// Faz OAuth + GET no URL base (sem body) para ver se o servidor responde.
+//
+app.get('/v1/api-ping', async (req, reply) => {
+  const agent = buildMtlsAgent()
+  const results = {}
+
+  // 1. OAuth
+  const t0 = Date.now()
+  let token
+  try {
+    token = await getOAuthToken(agent)
+    results.oauth = { ok: true, latency_ms: Date.now() - t0 }
+  } catch (err) {
+    results.oauth = { ok: false, error: err.message, latency_ms: Date.now() - t0 }
+    return { results }
+  }
+
+  // 2. GET no base URL (sem body — 405 ou similar é aceitável, o que importa é o servidor responder)
+  const base = process.env.ITAU_BASE_URL.replace(/\/$/, '')
+  const pingUrl = `${base}/boletos_pix`
+  const t1 = Date.now()
+  try {
+    const r = await axios.get(pingUrl, {
+      headers: {
+        'Authorization':        `Bearer ${token}`,
+        'x-itau-apikey':        process.env.ITAU_API_KEY,
+        'x-itau-correlationID': randomUUID(),
+      },
+      httpsAgent:     agent,
+      validateStatus: () => true,
+      timeout:        15_000,
+    })
+    results.boletos_pix_get = {
+      ok: true,
+      status: r.status,
+      latency_ms: Date.now() - t1,
+      url: pingUrl,
+    }
+  } catch (err) {
+    results.boletos_pix_get = {
+      ok: false,
+      error: err.message,
+      latency_ms: Date.now() - t1,
+      url: pingUrl,
+    }
+  }
+
+  // 3. Também testa o host com uma conexão TCP simples (sem mTLS) apenas para diferenciar
+  //    problemas de rede de problemas de certificado
+  const t2 = Date.now()
+  try {
+    const r2 = await axios.get('https://sts.itau.com.br', {
+      validateStatus: () => true,
+      timeout: 5_000,
+    })
+    results.sts_host = { ok: true, status: r2.status, latency_ms: Date.now() - t2 }
+  } catch (err) {
+    results.sts_host = { ok: false, error: err.message.slice(0, 120), latency_ms: Date.now() - t2 }
+  }
+
+  return {
+    itau_base_url: base,
+    results,
   }
 })
 
