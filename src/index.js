@@ -349,6 +349,7 @@ app.post('/v1/charges', async (req, reply) => {
                 ?? ''
     const errorMsg = detail ? `HTTP ${statusCode} — ${detail}` : `HTTP ${statusCode}`
     app.log.error(`[charges] erro Itaú: ${errorMsg}`)
+    app.log.error(`[charges] raw_response Itaú: ${JSON.stringify(responseData)}`)
     return reply.code(statusCode >= 500 ? 502 : 422).send({
       success:      false,
       status_code:  statusCode,
