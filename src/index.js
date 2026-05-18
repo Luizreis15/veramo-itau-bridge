@@ -50,11 +50,15 @@ function buildMtlsAgent() {
 async function getOAuthToken(agent) {
   const tokenUrl = process.env.ITAU_TOKEN_URL ?? 'https://sts.itau.com.br/api/oauth/token'
 
-  const body = new URLSearchParams({
+  const params = {
     grant_type:    'client_credentials',
     client_id:     process.env.ITAU_CLIENT_ID,
     client_secret: process.env.ITAU_CLIENT_SECRET,
-  }).toString()
+  }
+  // ITAU_OAUTH_SCOPE: escopos separados por espaço, ex: "boleto_cobranca.read pix.read"
+  // Necessário para endpoints de consulta (GET) — habilitar no portal Itaú Developer
+  if (process.env.ITAU_OAUTH_SCOPE) params.scope = process.env.ITAU_OAUTH_SCOPE
+  const body = new URLSearchParams(params).toString()
 
   let res
   try {
@@ -158,11 +162,13 @@ app.post('/v1/oauth-test', async (req, reply) => {
   let statusCode, sanitizedBody
 
   try {
-    const res = await axios.post(tokenUrl, new URLSearchParams({
+    const oauthParams = {
       grant_type:    'client_credentials',
       client_id:     process.env.ITAU_CLIENT_ID,
       client_secret: process.env.ITAU_CLIENT_SECRET,
-    }).toString(), {
+    }
+    if (process.env.ITAU_OAUTH_SCOPE) oauthParams.scope = process.env.ITAU_OAUTH_SCOPE
+    const res = await axios.post(tokenUrl, new URLSearchParams(oauthParams).toString(), {
       headers:        { 'Content-Type': 'application/x-www-form-urlencoded' },
       httpsAgent:     agent,
       validateStatus: () => true,
@@ -189,9 +195,12 @@ app.post('/v1/oauth-test', async (req, reply) => {
     success:         statusCode >= 200 && statusCode < 300,
     status_code:     statusCode,
     token_url:       tokenUrl,
+    scope_sent:      process.env.ITAU_OAUTH_SCOPE ?? '(nenhum)',
     mtls_used:       true,
     headers_sent:    ['Content-Type'],
-    body_keys_sent:  ['grant_type', 'client_id', 'client_secret'],
+    body_keys_sent:  process.env.ITAU_OAUTH_SCOPE
+      ? ['grant_type', 'client_id', 'client_secret', 'scope']
+      : ['grant_type', 'client_id', 'client_secret'],
     response_body:   sanitizedBody,
     latency_ms:      Date.now() - start,
   }
