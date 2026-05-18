@@ -13,6 +13,8 @@ const REQUIRED = [
   'ITAU_API_KEY',
   'ITAU_BASE_URL',
   'BRIDGE_ACCESS_TOKEN',
+  'ITAU_WEBHOOK_CLIENT_ID',
+  'ITAU_WEBHOOK_CLIENT_SECRET',
 ]
 
 const missing = REQUIRED.filter(k => !process.env[k])
@@ -696,18 +698,19 @@ app.get('/v1/pix-status', async (req, reply) => {
 //
 // Registra o webhook de boleto na API Boletos v3 do Itaú.
 // Usa OAuth + mTLS do bridge para não expor token ao chamador.
-// Body esperado: { id_beneficiario, webhook_client_id, webhook_client_secret }
+// Body esperado: { id_beneficiario }
+// (webhook_client_id/secret são secrets do bridge — não vêm do caller)
 //
 app.post('/v1/boleto-webhook-register', async (req, reply) => {
-  const {
-    id_beneficiario,
-    webhook_client_id,
-    webhook_client_secret,
-  } = req.body ?? {}
+  const { id_beneficiario } = req.body ?? {}
 
-  if (!id_beneficiario)     return reply.code(400).send({ error: 'id_beneficiario é obrigatório' })
-  if (!webhook_client_id)   return reply.code(400).send({ error: 'webhook_client_id é obrigatório' })
-  if (!webhook_client_secret) return reply.code(400).send({ error: 'webhook_client_secret é obrigatório' })
+  if (!id_beneficiario) return reply.code(400).send({ error: 'id_beneficiario é obrigatório' })
+
+  const webhookClientId     = process.env.ITAU_WEBHOOK_CLIENT_ID
+  const webhookClientSecret = process.env.ITAU_WEBHOOK_CLIENT_SECRET
+  if (!webhookClientId || !webhookClientSecret) {
+    return reply.code(500).send({ error: 'ITAU_WEBHOOK_CLIENT_ID ou ITAU_WEBHOOK_CLIENT_SECRET não configurados.' })
+  }
 
   const agent = buildMtlsAgent()
   let token
@@ -721,14 +724,10 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
 
   const bodyPayload = {
     data: {
-      id_beneficiario:       Number(id_beneficiario),
-      webhook_url:           'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook',
-      webhook_client_id,
-      webhook_client_secret,
-      webhook_oauth_url:     'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
-      webhook_oauth_scope:   'boletos',
-      valor_minimo:          0.1,
-      tipos_notificacoes:    ['BAIXA_EFETIVA'],
+      webhook_url:         'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook',
+      webhook_oauth_url:   'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
+      webhook_oauth_scope: 'boletowebhook',
+      valor_minimo:        0.01,
     },
   }
 
