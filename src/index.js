@@ -628,6 +628,61 @@ app.post('/v1/webhook-register', async (req, reply) => {
   }
 })
 
+// ── GET /v1/pix-status ────────────────────────────────────────────────────────
+//
+// Consulta o status de um PIX pelo txid na API de conciliação do Itaú.
+// Query params: txid (obrigatório)
+//
+app.get('/v1/pix-status', async (req, reply) => {
+  const { txid } = req.query ?? {}
+  if (!txid) return reply.code(400).send({ error: 'txid é obrigatório' })
+
+  const agent = buildMtlsAgent()
+  let token
+  try { token = await getOAuthToken(agent) } catch (err) {
+    return reply.code(502).send({ error: err.message })
+  }
+
+  const base = process.env.ITAU_BASE_URL.replace(/\/$/, '')
+  const url  = `${base}/pix?txid=${encodeURIComponent(txid)}&tamanhoPagina=1`
+
+  app.log.info(`[pix-status] GET ${url}`)
+  const start = Date.now()
+
+  let res
+  try {
+    res = await axios.get(url, {
+      headers: {
+        'Authorization':        `Bearer ${token}`,
+        'x-itau-apikey':        process.env.ITAU_API_KEY,
+        'x-itau-correlationID': randomUUID(),
+      },
+      httpsAgent:     agent,
+      validateStatus: () => true,
+      timeout:        20_000,
+    })
+  } catch (err) {
+    return reply.code(502).send({ error: `Rede inacessível: ${err.message}` })
+  }
+
+  app.log.info(`[pix-status] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
+
+  if (!res.data) return reply.code(502).send({ error: 'Resposta vazia do Itaú' })
+
+  // Normaliza: verifica se existe algum PIX com o txid e se está pago
+  const pixList = res.data?.pix ?? []
+  const paid    = pixList.length > 0
+
+  return reply.send({
+    success:      res.status >= 200 && res.status < 300,
+    status_code:  res.status,
+    paid,
+    pix_count:    pixList.length,
+    raw_response: res.data,
+    latency_ms:   Date.now() - start,
+  })
+})
+
 // ── POST /v1/boleto-webhook-register ──────────────────────────────────────────
 //
 // Registra o webhook de boleto na API Boletos v3 do Itaú.
