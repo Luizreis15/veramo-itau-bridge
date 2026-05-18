@@ -86,6 +86,14 @@ function formatValue17(amountReais) {
   return String(cents).padStart(17, '0')
 }
 
+// ── Data atual no fuso BRT (UTC-3) ───────────────────────────────────────────
+// Itaú valida data_emissao contra a data corrente no fuso do servidor deles (BRT).
+// new Date().toISOString() retorna UTC — após 21h BRT o dia já virou em UTC.
+function todayBRT() {
+  const brt = new Date(Date.now() - 3 * 60 * 60 * 1000)
+  return brt.toISOString().split('T')[0]
+}
+
 // ── Data + N dias (YYYY-MM-DD) ────────────────────────────────────────────────
 function addDays(dateStr, days) {
   const d = new Date(dateStr + 'T12:00:00Z')
@@ -240,7 +248,7 @@ app.post('/v1/charges', async (req, reply) => {
   const textoRef6        = (texto_ref ? String(texto_ref).slice(0, 6) : '000000')
   const mensagemLimpa    = sanitizeText(mensagem || 'Cobranca')
   const valorFormatado   = formatValue17(amount)
-  const dataEmissao      = new Date().toISOString().split('T')[0]
+  const dataEmissao      = todayBRT()
   const dataLimite       = addDays(due_date, 30)          // data_limite_pagamento = vencimento + 30d
   const cnpjDigits       = payer.cnpj.replace(/\D/g, '')
   const cep              = (payer.endereco?.cep ?? '01000000').replace(/\D/g, '').padEnd(8, '0').slice(0, 8)
