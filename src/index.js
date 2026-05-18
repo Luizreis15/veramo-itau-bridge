@@ -728,6 +728,7 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
       webhook_oauth_url:   'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
       webhook_oauth_scope: 'boletowebhook',
       valor_minimo:        0.01,
+      tipos_ocorrencia:    ['01'],  // 01 = Baixa Efetiva/Liquidação
     },
   }
 
@@ -758,6 +759,54 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
     status_code:  res.status,
     raw_response: res.data,
     latency_ms:   Date.now() - start,
+  })
+})
+
+// ── GET /v1/boleto-webhook-check ──────────────────────────────────────────────
+//
+// Consulta os webhooks de boleto cadastrados no Itaú.
+// Query: ?id_beneficiario=151400969995
+//
+app.get('/v1/boleto-webhook-check', async (req, reply) => {
+  const { id_beneficiario } = req.query ?? {}
+  if (!id_beneficiario) return reply.code(400).send({ error: 'id_beneficiario é obrigatório' })
+
+  const agent = buildMtlsAgent()
+  let token
+  try { token = await getOAuthToken(agent) } catch (err) {
+    return reply.code(502).send({ error: err.message })
+  }
+
+  const base = 'https://boletos.cloud.itau.com.br/boletos/v3'
+  const url  = `${base}/notificacoes_boletos`
+  const correlationId = randomUUID()
+  const start = Date.now()
+
+  app.log.info(`[boleto-webhook-check] GET ${url}`)
+
+  let res
+  try {
+    res = await axios.get(url, {
+      headers: {
+        'Authorization':        `Bearer ${token}`,
+        'x-itau-apikey':        process.env.ITAU_API_KEY,
+        'x-itau-correlationID': correlationId,
+      },
+      httpsAgent:     agent,
+      validateStatus: () => true,
+      timeout:        15_000,
+    })
+  } catch (err) {
+    return reply.code(502).send({ error: `Rede inacessível: ${err.message}` })
+  }
+
+  app.log.info(`[boleto-webhook-check] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
+
+  return reply.code(res.status < 500 ? res.status : 502).send({
+    success:     res.status >= 200 && res.status < 300,
+    status_code: res.status,
+    raw_response: res.data,
+    latency_ms:  Date.now() - start,
   })
 })
 
