@@ -628,6 +628,76 @@ app.post('/v1/webhook-register', async (req, reply) => {
   }
 })
 
+// ── POST /v1/boleto-webhook-register ──────────────────────────────────────────
+//
+// Registra o webhook de boleto na API Boletos v3 do Itaú.
+// Usa OAuth + mTLS do bridge para não expor token ao chamador.
+// Body esperado: { id_beneficiario, webhook_client_id, webhook_client_secret }
+//
+app.post('/v1/boleto-webhook-register', async (req, reply) => {
+  const {
+    id_beneficiario,
+    webhook_client_id,
+    webhook_client_secret,
+  } = req.body ?? {}
+
+  if (!id_beneficiario)     return reply.code(400).send({ error: 'id_beneficiario é obrigatório' })
+  if (!webhook_client_id)   return reply.code(400).send({ error: 'webhook_client_id é obrigatório' })
+  if (!webhook_client_secret) return reply.code(400).send({ error: 'webhook_client_secret é obrigatório' })
+
+  const agent = buildMtlsAgent()
+  let token
+  try { token = await getOAuthToken(agent) } catch (err) {
+    return reply.code(502).send({ error: err.message })
+  }
+
+  const base = 'https://boletos.cloud.itau.com.br/boletos/v3'
+  const url  = `${base}/notificacoes_boletos`
+  const correlationId = randomUUID()
+
+  const bodyPayload = {
+    data: {
+      id_beneficiario:       Number(id_beneficiario),
+      webhook_url:           'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook',
+      webhook_client_id,
+      webhook_client_secret,
+      webhook_oauth_url:     'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
+      webhook_oauth_scope:   'boletos',
+      valor_minimo:          0.1,
+      tipos_notificacoes:    ['BAIXA_EFETIVA'],
+    },
+  }
+
+  app.log.info(`[boleto-webhook-register] POST ${url} | correlationID: ${correlationId}`)
+  const start = Date.now()
+
+  let res
+  try {
+    res = await axios.post(url, bodyPayload, {
+      headers: {
+        'Authorization':        `Bearer ${token}`,
+        'x-itau-apikey':        process.env.ITAU_API_KEY,
+        'x-itau-correlationID': correlationId,
+        'Content-Type':         'application/json',
+      },
+      httpsAgent:     agent,
+      validateStatus: () => true,
+      timeout:        30_000,
+    })
+  } catch (err) {
+    return reply.code(502).send({ error: `Rede inacessível: ${err.message}` })
+  }
+
+  app.log.info(`[boleto-webhook-register] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
+
+  return reply.code(res.status < 500 ? res.status : 502).send({
+    success:      res.status >= 200 && res.status < 300,
+    status_code:  res.status,
+    raw_response: res.data,
+    latency_ms:   Date.now() - start,
+  })
+})
+
 // ── Start ─────────────────────────────────────────────────────────────────────
 const port = Number(process.env.PORT ?? 3001)
 const host = process.env.HOST ?? '0.0.0.0'
