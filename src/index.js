@@ -566,7 +566,7 @@ app.get('/v1/charge-status', async (req, reply) => {
     const latencyMs = Date.now() - start
     attempts.push({ url, status: res.status })
     app.log.info(`[charge-status] ${url} → HTTP ${res.status} em ${latencyMs}ms`)
-    if (res.status !== 404 && res.status !== 405) {
+    if (res.status !== 404 && res.status !== 405 && res.status !== 403) {
       return { status_code: res.status, nosso_numero, raw_response: res.data, latency_ms: latencyMs }
     }
   }
