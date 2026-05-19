@@ -826,7 +826,8 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
 
 // ── GET /v1/boleto-webhook-check ──────────────────────────────────────────────
 //
-// Consulta os webhooks de boleto cadastrados no Itaú.
+// Consulta webhooks de boleto cadastrados. Se a webhook_url divergir da atual,
+// faz PATCH automático para sincronizar.
 // Query: ?id_beneficiario=151400969995
 //
 app.get('/v1/boleto-webhook-check', async (req, reply) => {
@@ -841,9 +842,7 @@ app.get('/v1/boleto-webhook-check', async (req, reply) => {
 
   const base = 'https://boletos.cloud.itau.com.br/boletos/v3'
   const url  = `${base}/notificacoes_boletos`
-  const correlationId = randomUUID()
   const start = Date.now()
-
   app.log.info(`[boleto-webhook-check] GET ${url}`)
 
   let res
@@ -852,7 +851,7 @@ app.get('/v1/boleto-webhook-check', async (req, reply) => {
       headers: {
         'Authorization':        `Bearer ${token}`,
         'x-itau-apikey':        process.env.ITAU_API_KEY,
-        'x-itau-correlationID': correlationId,
+        'x-itau-correlationID': randomUUID(),
       },
       httpsAgent:     agent,
       validateStatus: () => true,
@@ -864,11 +863,66 @@ app.get('/v1/boleto-webhook-check', async (req, reply) => {
 
   app.log.info(`[boleto-webhook-check] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
 
-  return reply.code(res.status < 500 ? res.status : 502).send({
-    success:     res.status >= 200 && res.status < 300,
+  if (!res.data || res.status >= 300) {
+    return reply.code(res.status < 500 ? res.status : 502).send({
+      success: false, status_code: res.status, raw_response: res.data,
+    })
+  }
+
+  // Normalizar lista — Itaú pode retornar objeto ou array dentro de .data
+  const lista = Array.isArray(res.data?.data) ? res.data.data
+    : res.data?.data ? [res.data.data]
+    : Array.isArray(res.data) ? res.data
+    : []
+
+  const currentWebhookUrl      = process.env.ITAU_WEBHOOK_URL      || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook'
+  const currentWebhookOauthUrl = process.env.ITAU_WEBHOOK_OAUTH_URL || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token'
+
+  const registros = lista.map(r => ({
+    id_notificacao_boleto: r.id_notificacao_boleto ?? r.id ?? null,
+    id_beneficiario:       r.id_beneficiario ?? null,
+    tipos_notificacoes:    r.tipos_notificacoes ?? r.tipo_notificacao ?? null,
+    webhook_url:           r.webhook_url ?? null,
+    webhook_oauth_url:     r.webhook_oauth_url ?? null,
+    webhook_oauth_scope:   r.webhook_oauth_scope ?? null,
+    valor_minimo:          r.valor_minimo ?? null,
+    url_atual_correta:     r.webhook_url === currentWebhookUrl,
+  }))
+
+  // PATCH automático em registros com URL desatualizada
+  const patches = []
+  for (const r of registros) {
+    if (!r.id_notificacao_boleto) continue
+    if (r.webhook_url === currentWebhookUrl) continue
+
+    app.log.info(`[boleto-webhook-check] PATCH id=${r.id_notificacao_boleto} — atualizando URLs`)
+    try {
+      const patchRes = await axios.patch(`${url}/${r.id_notificacao_boleto}`, {
+        data: { webhook_url: currentWebhookUrl, webhook_oauth_url: currentWebhookOauthUrl },
+      }, {
+        headers: {
+          'Authorization':        `Bearer ${token}`,
+          'x-itau-apikey':        process.env.ITAU_API_KEY,
+          'x-itau-correlationID': randomUUID(),
+          'Content-Type':         'application/json',
+        },
+        httpsAgent:     agent,
+        validateStatus: () => true,
+        timeout:        15_000,
+      })
+      patches.push({ id: r.id_notificacao_boleto, status: patchRes.status, ok: patchRes.status < 300 })
+    } catch (err) {
+      patches.push({ id: r.id_notificacao_boleto, error: err.message })
+    }
+  }
+
+  return reply.send({
+    success:     true,
     status_code: res.status,
-    raw_response: res.data,
+    registros,
+    patches:     patches.length ? patches : undefined,
     latency_ms:  Date.now() - start,
+    raw_response: res.data,
   })
 })
 
