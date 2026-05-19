@@ -725,28 +725,31 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
   const url  = `${base}/notificacoes_boletos`
   const correlationId = randomUUID()
 
+  const tipoArray = Array.isArray(tipoNotificacao) ? tipoNotificacao : [tipoNotificacao]
+
   const bodyPayload = {
     data: {
       id_beneficiario:       Number(id_beneficiario),
-      tipo_notificacao:      tipoNotificacao,
+      tipo_notificacao:      tipoArray,
       webhook_url:           webhookUrl,
       webhook_client_id:     webhookClientId,
       webhook_client_secret: webhookClientSecret,
       webhook_oauth_url:     webhookOauthUrl,
       webhook_oauth_scope:   webhookOauthScope,
-      valor_minimo:          0.01,
+      valor_minimo:          Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01'),
     },
   }
 
-  console.log('boleto webhook register payload', {
-    id_beneficiario,
-    tipo_notificacao:  tipoNotificacao,
-    webhook_url:       webhookUrl,
-    webhook_oauth_url: webhookOauthUrl,
+  const debugPayload = {
+    id_beneficiario:    Number(id_beneficiario),
+    tipo_notificacao:   tipoArray,
+    webhook_url:        webhookUrl,
+    webhook_oauth_url:  webhookOauthUrl,
     webhook_oauth_scope: webhookOauthScope,
-    valor_minimo:      0.01,
-  })
+    valor_minimo:       bodyPayload.data.valor_minimo,
+  }
 
+  console.log('payload enviado ao Itau /notificacoes_boletos', debugPayload)
   app.log.info(`[boleto-webhook-register] POST ${url} | correlationID: ${correlationId}`)
   const start = Date.now()
 
@@ -769,12 +772,14 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
 
   app.log.info(`[boleto-webhook-register] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
 
+  const ok = res.status >= 200 && res.status < 300
   return reply.code(res.status < 500 ? res.status : 502).send({
-    success:           res.status >= 200 && res.status < 300,
+    success:           ok,
     status_code:       res.status,
     raw_response:      res.data,
     latency_ms:        Date.now() - start,
-    debug_received:    { id_beneficiario, tipo_notificacao_raw: tipo_notificacao, tipo_notificacao_used: tipoNotificacao },
+    debug_received:    { id_beneficiario, tipo_notificacao_raw: tipo_notificacao, tipo_notificacao_used: tipoArray },
+    ...(ok ? {} : { debug_itau_payload: debugPayload }),
   })
 })
 
