@@ -725,31 +725,34 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
   const url  = `${base}/notificacoes_boletos`
   const correlationId = randomUUID()
 
-  const tipoArray = Array.isArray(tipoNotificacao) ? tipoNotificacao : [tipoNotificacao]
+  const tipoArray  = Array.isArray(tipoNotificacao) ? tipoNotificacao : [tipoNotificacao]
+  const valorMinimo = Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01')
 
   const bodyPayload = {
     data: {
-      id_beneficiario:       Number(id_beneficiario),
+      id_beneficiario:       id_beneficiario,
       tipo_notificacao:      tipoArray,
       webhook_url:           webhookUrl,
       webhook_client_id:     webhookClientId,
       webhook_client_secret: webhookClientSecret,
       webhook_oauth_url:     webhookOauthUrl,
       webhook_oauth_scope:   webhookOauthScope,
-      valor_minimo:          Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01'),
+      valor_minimo:          valorMinimo,
     },
   }
 
   const debugPayload = {
-    id_beneficiario:    Number(id_beneficiario),
-    tipo_notificacao:   tipoArray,
-    webhook_url:        webhookUrl,
-    webhook_oauth_url:  webhookOauthUrl,
-    webhook_oauth_scope: webhookOauthScope,
-    valor_minimo:       bodyPayload.data.valor_minimo,
+    data: {
+      id_beneficiario:    id_beneficiario,
+      tipo_notificacao:   tipoArray,
+      webhook_url:        webhookUrl,
+      webhook_oauth_url:  webhookOauthUrl,
+      webhook_oauth_scope: webhookOauthScope,
+      valor_minimo:       valorMinimo,
+    },
   }
 
-  console.log('payload enviado ao Itau /notificacoes_boletos', debugPayload)
+  console.log('payload enviado ao Itau /notificacoes_boletos', JSON.stringify(debugPayload))
   app.log.info(`[boleto-webhook-register] POST ${url} | correlationID: ${correlationId}`)
   const start = Date.now()
 
