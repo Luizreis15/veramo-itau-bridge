@@ -725,32 +725,30 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
   const url  = `${base}/notificacoes_boletos`
   const correlationId = randomUUID()
 
-  const tipoArray  = Array.isArray(tipoNotificacao) ? tipoNotificacao : [tipoNotificacao]
-  const valorMinimo = Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01')
+  const valorMinimo  = Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01')
+  const payloadMode  = Number((req.body || {}).payload_mode || 0)
 
-  const bodyPayload = {
-    data: {
-      id_beneficiario:       id_beneficiario,
-      tipo_notificacao:      tipoArray,
-      webhook_url:           webhookUrl,
-      webhook_client_id:     webhookClientId,
-      webhook_client_secret: webhookClientSecret,
-      webhook_oauth_url:     webhookOauthUrl,
-      webhook_oauth_scope:   webhookOauthScope,
-      valor_minimo:          valorMinimo,
-    },
+  const base_data = {
+    id_beneficiario:       id_beneficiario,
+    webhook_url:           webhookUrl,
+    webhook_client_id:     webhookClientId,
+    webhook_client_secret: webhookClientSecret,
+    webhook_oauth_url:     webhookOauthUrl,
+    webhook_oauth_scope:   webhookOauthScope,
+    valor_minimo:          valorMinimo,
   }
 
-  const debugPayload = {
-    data: {
-      id_beneficiario:    id_beneficiario,
-      tipo_notificacao:   tipoArray,
-      webhook_url:        webhookUrl,
-      webhook_oauth_url:  webhookOauthUrl,
-      webhook_oauth_scope: webhookOauthScope,
-      valor_minimo:       valorMinimo,
-    },
-  }
+  if      (payloadMode === 1) base_data.tipo_notificacao  = tipoNotificacao           // string
+  else if (payloadMode === 2) base_data.tipos_notificacao = [tipoNotificacao]          // array, nome plural
+  else if (payloadMode === 3) base_data.tipos_notificacoes = [tipoNotificacao]         // array, nome plural com 'es'
+  else if (payloadMode === 4) base_data.tipo_notificacao  = [{ codigo: tipoNotificacao }] // array de objetos
+  else                        base_data.tipo_notificacao  = [tipoNotificacao]          // default: array
+
+  const bodyPayload = { data: base_data }
+
+  // debug sanitizado — sem client_secret, token ou certificado
+  const { webhook_client_id: _id, webhook_client_secret: _sec, ...debugData } = base_data
+  const debugPayload = { data: { ...debugData, webhook_client_id: '***' } }
 
   console.log('payload enviado ao Itau /notificacoes_boletos', JSON.stringify(debugPayload))
   app.log.info(`[boleto-webhook-register] POST ${url} | correlationID: ${correlationId}`)
