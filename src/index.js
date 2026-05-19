@@ -722,12 +722,14 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
 
   const bodyPayload = {
     data: {
-      id_beneficiario:     Number(id_beneficiario),
-      webhook_url:         'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook',
-      webhook_oauth_url:   'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
-      webhook_oauth_scope: 'boletowebhook',
-      valor_minimo:        0.01,
-      tipos_ocorrencia:    ['01'],  // 01 = Baixa Efetiva/Liquidação
+      id_beneficiario:       Number(id_beneficiario),
+      webhook_url:           'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook',
+      webhook_client_id:     webhookClientId,
+      webhook_client_secret: webhookClientSecret,
+      webhook_oauth_url:     'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
+      webhook_oauth_scope:   'boletowebhook',
+      valor_minimo:          0.01,
+      tipos_ocorrencia:      ['01'],  // 01 = Baixa Efetiva/Liquidação
     },
   }
 
