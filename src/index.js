@@ -700,8 +700,8 @@ app.get('/v1/pix-status', async (req, reply) => {
 // (webhook_client_id/secret são secrets do bridge — não vêm do caller)
 //
 app.post('/v1/boleto-webhook-register', async (req, reply) => {
-  const id_beneficiario = (req.body ?? {}).id_beneficiario
-  const tipoNotificacao = (req.body ?? {}).tipo_notificacao || '01'
+  const { id_beneficiario, tipo_notificacao } = req.body || {}
+  const tipoNotificacao = tipo_notificacao || '01'
 
   if (!id_beneficiario) return reply.code(400).send({ error: 'id_beneficiario é obrigatório' })
 
@@ -770,10 +770,11 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
   app.log.info(`[boleto-webhook-register] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
 
   return reply.code(res.status < 500 ? res.status : 502).send({
-    success:      res.status >= 200 && res.status < 300,
-    status_code:  res.status,
-    raw_response: res.data,
-    latency_ms:   Date.now() - start,
+    success:           res.status >= 200 && res.status < 300,
+    status_code:       res.status,
+    raw_response:      res.data,
+    latency_ms:        Date.now() - start,
+    debug_received:    { id_beneficiario, tipo_notificacao_raw: tipo_notificacao, tipo_notificacao_used: tipoNotificacao },
   })
 })
 
