@@ -722,6 +722,7 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
 
   const bodyPayload = {
     data: {
+      id_beneficiario:     Number(id_beneficiario),
       webhook_url:         'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook',
       webhook_oauth_url:   'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
       webhook_oauth_scope: 'boletowebhook',
