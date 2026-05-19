@@ -841,7 +841,7 @@ app.get('/v1/boleto-webhook-check', async (req, reply) => {
   }
 
   const base = 'https://boletos.cloud.itau.com.br/boletos/v3'
-  const url  = `${base}/notificacoes_boletos`
+  const url  = `${base}/notificacoes_boletos?id_beneficiario=${encodeURIComponent(id_beneficiario)}`
   const start = Date.now()
   app.log.info(`[boleto-webhook-check] GET ${url}`)
 
