@@ -13,8 +13,6 @@ const REQUIRED = [
   'ITAU_API_KEY',
   'ITAU_BASE_URL',
   'BRIDGE_ACCESS_TOKEN',
-  'ITAU_WEBHOOK_CLIENT_ID',
-  'ITAU_WEBHOOK_CLIENT_SECRET',
 ]
 
 const missing = REQUIRED.filter(k => !process.env[k])
