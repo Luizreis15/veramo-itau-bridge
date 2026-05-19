@@ -729,11 +729,12 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
       webhook_oauth_url:     'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
       webhook_oauth_scope:   'boletowebhook',
       valor_minimo:          0.01,
-      tipo_notificacao:      ['LIQUIDACAO'],
+      tipo_notificacao:      ['LIQUIDACAO', 'BAIXA'],
     },
   }
 
   app.log.info(`[boleto-webhook-register] POST ${url} | correlationID: ${correlationId}`)
+  app.log.info(`[boleto-webhook-register] body: ${JSON.stringify(bodyPayload)}`)
   const start = Date.now()
 
   let res
