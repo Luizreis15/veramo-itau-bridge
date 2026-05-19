@@ -700,9 +700,7 @@ app.get('/v1/pix-status', async (req, reply) => {
 // (webhook_client_id/secret são secrets do bridge — não vêm do caller)
 //
 app.post('/v1/boleto-webhook-register', async (req, reply) => {
-  const { id_beneficiario, tipo_notificacao } = req.body || {}
-  const tipoNotificacao = tipo_notificacao || '01'
-
+  const { id_beneficiario } = req.body || {}
   if (!id_beneficiario) return reply.code(400).send({ error: 'id_beneficiario é obrigatório' })
 
   const webhookClientId     = process.env.ITAU_WEBHOOK_CLIENT_ID
@@ -711,9 +709,38 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
     return reply.code(500).send({ error: 'ITAU_WEBHOOK_CLIENT_ID ou ITAU_WEBHOOK_CLIENT_SECRET não configurados.' })
   }
 
-  const webhookUrl       = process.env.ITAU_WEBHOOK_URL       || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook'
-  const webhookOauthUrl  = process.env.ITAU_WEBHOOK_OAUTH_URL  || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token'
-  const webhookOauthScope = process.env.ITAU_WEBHOOK_OAUTH_SCOPE || 'boletowebhook'
+  const tipoNotificacaoRaw = (req.body || {}).tipo_notificacao || '01'
+  const tipoArray = Array.isArray(tipoNotificacaoRaw)
+    ? tipoNotificacaoRaw.map(String).filter(Boolean)
+    : [String(tipoNotificacaoRaw)]
+  const tipoString  = tipoArray[0] || '01'
+  const payloadMode = Number((req.body || {}).payload_mode || 1)
+
+  const baseData = {
+    id_beneficiario:       String(id_beneficiario),
+    webhook_url:           process.env.ITAU_WEBHOOK_URL      || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook',
+    webhook_client_id:     webhookClientId,
+    webhook_client_secret: webhookClientSecret,
+    webhook_oauth_url:     process.env.ITAU_WEBHOOK_OAUTH_URL || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
+    webhook_oauth_scope:   process.env.ITAU_WEBHOOK_OAUTH_SCOPE || 'boletowebhook',
+    valor_minimo:          Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01'),
+  }
+
+  let data
+  switch (payloadMode) {
+    case 1:  data = { ...baseData, tipo_notificacao: tipoString };                       break
+    case 2:  data = { ...baseData, tipos_notificacao: tipoArray };                       break
+    case 3:  data = { ...baseData, tipos_notificacoes: tipoArray };                      break
+    case 4:  data = { ...baseData, tipo_notificacao: tipoArray.map(c => ({ codigo: c })) }; break
+    default: data = { ...baseData, tipo_notificacao: tipoString }
+  }
+
+  const itauPayload = { data }
+
+  // debug sanitizado — sem secrets
+  const { webhook_client_secret: _s, ...debugData } = data
+  const debugItauPayload = { data: { ...debugData, webhook_client_id: '***' } }
+  console.log('payload enviado ao Itau /notificacoes_boletos', JSON.stringify(debugItauPayload))
 
   const agent = buildMtlsAgent()
   let token
@@ -721,42 +748,14 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
     return reply.code(502).send({ error: err.message })
   }
 
-  const base = 'https://boletos.cloud.itau.com.br/boletos/v3'
-  const url  = `${base}/notificacoes_boletos`
+  const url = 'https://boletos.cloud.itau.com.br/boletos/v3/notificacoes_boletos'
   const correlationId = randomUUID()
-
-  const valorMinimo  = Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01')
-  const payloadMode  = Number((req.body || {}).payload_mode || 0)
-
-  const base_data = {
-    id_beneficiario:       id_beneficiario,
-    webhook_url:           webhookUrl,
-    webhook_client_id:     webhookClientId,
-    webhook_client_secret: webhookClientSecret,
-    webhook_oauth_url:     webhookOauthUrl,
-    webhook_oauth_scope:   webhookOauthScope,
-    valor_minimo:          valorMinimo,
-  }
-
-  if      (payloadMode === 1) base_data.tipo_notificacao  = tipoNotificacao           // string
-  else if (payloadMode === 2) base_data.tipos_notificacao = [tipoNotificacao]          // array, nome plural
-  else if (payloadMode === 3) base_data.tipos_notificacoes = [tipoNotificacao]         // array, nome plural com 'es'
-  else if (payloadMode === 4) base_data.tipo_notificacao  = [{ codigo: tipoNotificacao }] // array de objetos
-  else                        base_data.tipo_notificacao  = [tipoNotificacao]          // default: array
-
-  const bodyPayload = { data: base_data }
-
-  // debug sanitizado — sem client_secret, token ou certificado
-  const { webhook_client_id: _id, webhook_client_secret: _sec, ...debugData } = base_data
-  const debugPayload = { data: { ...debugData, webhook_client_id: '***' } }
-
-  console.log('payload enviado ao Itau /notificacoes_boletos', JSON.stringify(debugPayload))
-  app.log.info(`[boleto-webhook-register] POST ${url} | correlationID: ${correlationId}`)
+  app.log.info(`[boleto-webhook-register] POST ${url} | mode: ${payloadMode} | correlationID: ${correlationId}`)
   const start = Date.now()
 
   let res
   try {
-    res = await axios.post(url, bodyPayload, {
+    res = await axios.post(url, itauPayload, {
       headers: {
         'Authorization':        `Bearer ${token}`,
         'x-itau-apikey':        process.env.ITAU_API_KEY,
@@ -775,12 +774,11 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
 
   const ok = res.status >= 200 && res.status < 300
   return reply.code(res.status < 500 ? res.status : 502).send({
-    success:           ok,
-    status_code:       res.status,
-    raw_response:      res.data,
-    latency_ms:        Date.now() - start,
-    debug_received:    { id_beneficiario, tipo_notificacao_raw: tipo_notificacao, tipo_notificacao_used: tipoArray },
-    ...(ok ? {} : { debug_itau_payload: debugPayload }),
+    success:            ok,
+    status_code:        res.status,
+    raw_response:       res.data,
+    latency_ms:         Date.now() - start,
+    debug_itau_payload: debugItauPayload,
   })
 })
 
