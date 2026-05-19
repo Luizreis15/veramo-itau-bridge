@@ -700,9 +700,11 @@ app.get('/v1/pix-status', async (req, reply) => {
 // (webhook_client_id/secret são secrets do bridge — não vêm do caller)
 //
 app.post('/v1/boleto-webhook-register', async (req, reply) => {
-  const { id_beneficiario } = req.body ?? {}
+  const { id_beneficiario, tipo_notificacao } = req.body ?? {}
 
   if (!id_beneficiario) return reply.code(400).send({ error: 'id_beneficiario é obrigatório' })
+
+  const tipoNotificacao = tipo_notificacao ?? '01'
 
   const webhookClientId     = process.env.ITAU_WEBHOOK_CLIENT_ID
   const webhookClientSecret = process.env.ITAU_WEBHOOK_CLIENT_SECRET
@@ -729,7 +731,7 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
       webhook_oauth_url:     'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
       webhook_oauth_scope:   'boletowebhook',
       valor_minimo:          0.01,
-      tipo_notificacao:      ['LIQUIDACAO', 'BAIXA'],
+      tipo_notificacao:      tipoNotificacao,
     },
   }
 
