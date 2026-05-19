@@ -709,38 +709,28 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
     return reply.code(500).send({ error: 'ITAU_WEBHOOK_CLIENT_ID ou ITAU_WEBHOOK_CLIENT_SECRET não configurados.' })
   }
 
-  const tipoNotificacaoRaw = (req.body || {}).tipo_notificacao || '01'
-  const tipoArray = Array.isArray(tipoNotificacaoRaw)
-    ? tipoNotificacaoRaw.map(String).filter(Boolean)
-    : [String(tipoNotificacaoRaw)]
-  const tipoString  = tipoArray[0] || '01'
-  const payloadMode = Number((req.body || {}).payload_mode || 1)
+  const tiposArray = Array.isArray((req.body || {}).tipo_notificacao)
+    ? (req.body.tipo_notificacao).map(String)
+    : [String((req.body || {}).tipo_notificacao || '01')]
 
-  const baseData = {
-    id_beneficiario:       String(id_beneficiario),
-    webhook_url:           process.env.ITAU_WEBHOOK_URL      || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook',
-    webhook_client_id:     webhookClientId,
-    webhook_client_secret: webhookClientSecret,
-    webhook_oauth_url:     process.env.ITAU_WEBHOOK_OAUTH_URL || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
-    webhook_oauth_scope:   process.env.ITAU_WEBHOOK_OAUTH_SCOPE || 'boletowebhook',
-    valor_minimo:          Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01'),
+  const webhookUrl      = process.env.ITAU_WEBHOOK_URL      || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook'
+  const webhookOauthUrl = process.env.ITAU_WEBHOOK_OAUTH_URL || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token'
+
+  const itauPayload = {
+    data: {
+      id_beneficiario:       String(id_beneficiario),
+      webhook_url:           webhookUrl,
+      webhook_client_id:     webhookClientId,
+      webhook_client_secret: webhookClientSecret,
+      webhook_oauth_url:     webhookOauthUrl,
+      webhook_oauth_scope:   process.env.ITAU_WEBHOOK_OAUTH_SCOPE || 'boletowebhook',
+      valor_minimo:          Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01'),
+      tipos_notificacoes:    tiposArray,
+    },
   }
 
-  let data
-  switch (payloadMode) {
-    case 1:  data = { ...baseData, tipo_notificacao: tipoString };                       break
-    case 2:  data = { ...baseData, tipos_notificacao: tipoArray };                       break
-    case 3:  data = { ...baseData, tipos_notificacoes: tipoArray };                      break
-    case 4:  data = { ...baseData, tipo_notificacao: tipoArray.map(c => ({ codigo: c })) }; break
-    default: data = { ...baseData, tipo_notificacao: tipoString }
-  }
-
-  const itauPayload = { data }
-
-  // debug sanitizado — sem secrets
-  const { webhook_client_secret: _s, ...debugData } = data
-  const debugItauPayload = { data: { ...debugData, webhook_client_id: '***' } }
-  console.log('payload enviado ao Itau /notificacoes_boletos', JSON.stringify(debugItauPayload))
+  const { webhook_client_secret: _s, ...debugData } = itauPayload.data
+  console.log('payload enviado ao Itau /notificacoes_boletos', JSON.stringify({ data: { ...debugData, webhook_client_id: '***' } }))
 
   const agent = buildMtlsAgent()
   let token
@@ -748,9 +738,10 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
     return reply.code(502).send({ error: err.message })
   }
 
-  const url = 'https://boletos.cloud.itau.com.br/boletos/v3/notificacoes_boletos'
+  const base = 'https://boletos.cloud.itau.com.br/boletos/v3'
+  const url  = `${base}/notificacoes_boletos`
   const correlationId = randomUUID()
-  app.log.info(`[boleto-webhook-register] POST ${url} | mode: ${payloadMode} | correlationID: ${correlationId}`)
+  app.log.info(`[boleto-webhook-register] POST ${url} | correlationID: ${correlationId}`)
   const start = Date.now()
 
   let res
@@ -772,13 +763,64 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
 
   app.log.info(`[boleto-webhook-register] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
 
+  // 422 "já cadastrada" — idempotente: consultar e se necessário atualizar via PATCH
+  const mensagem422 = String(res.data?.mensagem ?? '').toLowerCase()
+  if (res.status === 422 && mensagem422.includes('já cadastrada')) {
+    app.log.info('[boleto-webhook-register] já cadastrado — consultando registro existente')
+
+    // GET para descobrir id_notificacao_boleto e webhook_url atual
+    let getRes
+    try {
+      getRes = await axios.get(url, {
+        headers: {
+          'Authorization':        `Bearer ${token}`,
+          'x-itau-apikey':        process.env.ITAU_API_KEY,
+          'x-itau-correlationID': randomUUID(),
+        },
+        httpsAgent:     agent,
+        validateStatus: () => true,
+        timeout:        15_000,
+      })
+    } catch (err) {
+      return reply.send({ success: true, already_registered: true, updated: false, status_code: 422 })
+    }
+
+    const registros = getRes.data?.data ?? []
+    const existing  = registros.find(r => String(r.id_beneficiario) === String(id_beneficiario))
+    const existingId  = existing?.id_notificacao_boleto ?? null
+    const existingUrl = existing?.webhook_url ?? null
+
+    // Se a webhook_url mudou, atualizar via PATCH
+    if (existingId && existingUrl !== webhookUrl) {
+      app.log.info(`[boleto-webhook-register] PATCH id=${existingId} — atualizando webhook_url`)
+      try {
+        await axios.patch(`${url}/${existingId}`, {
+          data: { webhook_url: webhookUrl, webhook_oauth_url: webhookOauthUrl },
+        }, {
+          headers: {
+            'Authorization':        `Bearer ${token}`,
+            'x-itau-apikey':        process.env.ITAU_API_KEY,
+            'x-itau-correlationID': randomUUID(),
+            'Content-Type':         'application/json',
+          },
+          httpsAgent:     agent,
+          validateStatus: () => true,
+          timeout:        15_000,
+        })
+      } catch { /* melhor esforço */ }
+
+      return reply.send({ success: true, already_registered: true, updated: true, id_notificacao_boleto: existingId })
+    }
+
+    return reply.send({ success: true, already_registered: true, updated: false, id_notificacao_boleto: existingId })
+  }
+
   const ok = res.status >= 200 && res.status < 300
   return reply.code(res.status < 500 ? res.status : 502).send({
-    success:            ok,
-    status_code:        res.status,
-    raw_response:       res.data,
-    latency_ms:         Date.now() - start,
-    debug_itau_payload: debugItauPayload,
+    success:      ok,
+    status_code:  res.status,
+    raw_response: res.data,
+    latency_ms:   Date.now() - start,
   })
 })
 
