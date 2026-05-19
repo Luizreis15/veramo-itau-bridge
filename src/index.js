@@ -700,17 +700,20 @@ app.get('/v1/pix-status', async (req, reply) => {
 // (webhook_client_id/secret são secrets do bridge — não vêm do caller)
 //
 app.post('/v1/boleto-webhook-register', async (req, reply) => {
-  const { id_beneficiario, tipo_notificacao } = req.body ?? {}
+  const id_beneficiario = (req.body ?? {}).id_beneficiario
+  const tipoNotificacao = (req.body ?? {}).tipo_notificacao || '01'
 
   if (!id_beneficiario) return reply.code(400).send({ error: 'id_beneficiario é obrigatório' })
-
-  const tipoNotificacao = tipo_notificacao ?? '01'
 
   const webhookClientId     = process.env.ITAU_WEBHOOK_CLIENT_ID
   const webhookClientSecret = process.env.ITAU_WEBHOOK_CLIENT_SECRET
   if (!webhookClientId || !webhookClientSecret) {
     return reply.code(500).send({ error: 'ITAU_WEBHOOK_CLIENT_ID ou ITAU_WEBHOOK_CLIENT_SECRET não configurados.' })
   }
+
+  const webhookUrl       = process.env.ITAU_WEBHOOK_URL       || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook'
+  const webhookOauthUrl  = process.env.ITAU_WEBHOOK_OAUTH_URL  || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token'
+  const webhookOauthScope = process.env.ITAU_WEBHOOK_OAUTH_SCOPE || 'boletowebhook'
 
   const agent = buildMtlsAgent()
   let token
@@ -725,18 +728,26 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
   const bodyPayload = {
     data: {
       id_beneficiario:       Number(id_beneficiario),
-      webhook_url:           'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook',
+      tipo_notificacao:      tipoNotificacao,
+      webhook_url:           webhookUrl,
       webhook_client_id:     webhookClientId,
       webhook_client_secret: webhookClientSecret,
-      webhook_oauth_url:     'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token',
-      webhook_oauth_scope:   'boletowebhook',
+      webhook_oauth_url:     webhookOauthUrl,
+      webhook_oauth_scope:   webhookOauthScope,
       valor_minimo:          0.01,
-      tipo_notificacao:      tipoNotificacao,
     },
   }
 
+  console.log('boleto webhook register payload', {
+    id_beneficiario,
+    tipo_notificacao:  tipoNotificacao,
+    webhook_url:       webhookUrl,
+    webhook_oauth_url: webhookOauthUrl,
+    webhook_oauth_scope: webhookOauthScope,
+    valor_minimo:      0.01,
+  })
+
   app.log.info(`[boleto-webhook-register] POST ${url} | correlationID: ${correlationId}`)
-  app.log.info(`[boleto-webhook-register] body: ${JSON.stringify(bodyPayload)}`)
   const start = Date.now()
 
   let res
