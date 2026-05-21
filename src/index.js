@@ -694,8 +694,8 @@ app.get('/v1/pix-status', async (req, reply) => {
     }
     app.log.info(`[pix-status] ${url} → HTTP ${res.status} em ${Date.now() - start}ms`)
     if (res.status === 200 && res.data) {
-      const pixList = res.data?.pix ?? (res.data?.status ? [res.data] : [])
-      const paid    = pixList.length > 0 || res.data?.status === 'CONCLUIDA'
+      const pixList = Array.isArray(res.data?.pix) ? res.data.pix : []
+      const paid    = res.data?.status === 'CONCLUIDA' || pixList.length > 0
       return reply.send({ success: true, status_code: res.status, paid, pix_count: pixList.length, raw_response: res.data, latency_ms: Date.now() - start })
     }
   }
@@ -715,8 +715,8 @@ app.get('/v1/pix-status', async (req, reply) => {
 
   if (!res.data) return reply.code(502).send({ error: 'Resposta vazia do Itaú' })
 
-  const pixList = res.data?.pix ?? (res.data?.status ? [res.data] : [])
-  const paid    = pixList.length > 0 || res.data?.status === 'CONCLUIDA'
+  const pixList = Array.isArray(res.data?.pix) ? res.data.pix : []
+  const paid    = res.data?.status === 'CONCLUIDA' || pixList.length > 0
 
   return reply.send({
     success:      res.status >= 200 && res.status < 300,
