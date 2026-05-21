@@ -546,20 +546,33 @@ app.get('/v1/charge-status', async (req, reply) => {
     return reply.code(502).send({ error: err.message })
   }
 
-  const base    = process.env.ITAU_BASE_URL.replace(/\/$/, '')
+  const base      = process.env.ITAU_BASE_URL.replace(/\/$/, '')
+  // boletoscash é o produto Itaú com escopo de leitura (boletoscash-boleto.read)
+  const apiRoot   = base.replace(/\/pix_recebimentos_conciliacoes.*$/, '').replace(/\/boletoscash.*$/, '')
+  const baseCash  = `${apiRoot}/boletoscash/v2`
   const headers = {
     'Authorization':        `Bearer ${token}`,
     'x-itau-apikey':        process.env.ITAU_API_KEY,
     'x-itau-correlationID': randomUUID(),
   }
 
-  // Candidatos de URL a tentar em ordem
+  // Candidatos de URL a tentar em ordem.
+  // Prioridade: boletoscash/v2 (tem escopo .read) antes de pix_recebimentos (só .write)
   const candidates = []
+  if (nosso_numero && beneficiario_id) {
+    candidates.push(`${baseCash}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&codigo_nosso_numero=${encodeURIComponent(nosso_numero)}`)
+    candidates.push(`${baseCash}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&nosso_numero=${encodeURIComponent(nosso_numero)}`)
+    candidates.push(`${baseCash}/boletos/${encodeURIComponent(nosso_numero)}`)
+  }
+  if (id_boleto) {
+    candidates.push(`${baseCash}/boletos_pix/${encodeURIComponent(id_boleto)}`)
+    candidates.push(`${baseCash}/boletos/${encodeURIComponent(id_boleto)}`)
+  }
+  // Fallback: pix_recebimentos (pode ter restrição de leitura dependendo do contrato)
   if (id_boleto)    candidates.push(`${base}/boletos_pix/${encodeURIComponent(id_boleto)}`)
   if (nosso_numero) candidates.push(`${base}/boletos_pix/${encodeURIComponent(nosso_numero)}`)
   if (nosso_numero && beneficiario_id) {
     candidates.push(`${base}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&codigo_nosso_numero=${encodeURIComponent(nosso_numero)}`)
-    candidates.push(`${base}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&nosso_numero=${encodeURIComponent(nosso_numero)}`)
   }
 
   const attempts = []
@@ -652,35 +665,63 @@ app.get('/v1/pix-status', async (req, reply) => {
     return reply.code(502).send({ error: err.message })
   }
 
-  const base = process.env.ITAU_BASE_URL.replace(/\/$/, '')
-  const url  = `${base}/pix?txid=${encodeURIComponent(txid)}&tamanhoPagina=1`
+  const apiRoot = process.env.ITAU_BASE_URL
+    .replace(/\/pix_recebimentos_conciliacoes.*$/, '')
+    .replace(/\/boletoscash.*$/, '')
 
-  app.log.info(`[pix-status] GET ${url}`)
+  // Tenta os dois endpoints com escopo pix.read / cob.read em ordem
+  const pixCandidates = [
+    `${apiRoot}/pix/v2/pix?txid=${encodeURIComponent(txid)}&tamanhoPagina=1`,
+    `${apiRoot}/cob/v2/cob/${encodeURIComponent(txid)}`,
+    `${process.env.ITAU_BASE_URL.replace(/\/$/, '')}/pix?txid=${encodeURIComponent(txid)}&tamanhoPagina=1`,
+  ]
+
+  app.log.info(`[pix-status] tentando ${pixCandidates.length} endpoints para txid: ${txid.slice(0,8)}...`)
+
+  for (const url of pixCandidates) {
+    app.log.info(`[pix-status] GET ${url}`)
+    const start = Date.now()
+    let res
+    try {
+      res = await axios.get(url, {
+        headers: {
+          'Authorization':        `Bearer ${token}`,
+          'x-itau-apikey':        process.env.ITAU_API_KEY,
+          'x-itau-correlationID': randomUUID(),
+        },
+        httpsAgent:     agent,
+        validateStatus: () => true,
+        timeout:        20_000,
+      })
+    } catch (err) {
+      app.log.warn(`[pix-status] erro em ${url}: ${err.message}`)
+      continue
+    }
+    app.log.info(`[pix-status] ${url} → HTTP ${res.status} em ${Date.now() - start}ms`)
+    if (res.status === 200 && res.data) {
+      const pixList = res.data?.pix ?? (res.data?.status ? [res.data] : [])
+      const paid    = pixList.length > 0 || res.data?.status === 'CONCLUIDA'
+      return reply.send({ success: true, status_code: res.status, paid, pix_count: pixList.length, raw_response: res.data, latency_ms: Date.now() - start })
+    }
+  }
+
+  // Nenhum endpoint funcionou — retornar último status
+  const url = pixCandidates[0]
   const start = Date.now()
-
   let res
   try {
     res = await axios.get(url, {
-      headers: {
-        'Authorization':        `Bearer ${token}`,
-        'x-itau-apikey':        process.env.ITAU_API_KEY,
-        'x-itau-correlationID': randomUUID(),
-      },
-      httpsAgent:     agent,
-      validateStatus: () => true,
-      timeout:        20_000,
+      headers: { 'Authorization': `Bearer ${token}`, 'x-itau-apikey': process.env.ITAU_API_KEY, 'x-itau-correlationID': randomUUID() },
+      httpsAgent: agent, validateStatus: () => true, timeout: 20_000,
     })
   } catch (err) {
     return reply.code(502).send({ error: `Rede inacessível: ${err.message}` })
   }
 
-  app.log.info(`[pix-status] Itaú respondeu HTTP ${res.status} em ${Date.now() - start}ms`)
-
   if (!res.data) return reply.code(502).send({ error: 'Resposta vazia do Itaú' })
 
-  // Normaliza: verifica se existe algum PIX com o txid e se está pago
-  const pixList = res.data?.pix ?? []
-  const paid    = pixList.length > 0
+  const pixList = res.data?.pix ?? (res.data?.status ? [res.data] : [])
+  const paid    = pixList.length > 0 || res.data?.status === 'CONCLUIDA'
 
   return reply.send({
     success:      res.status >= 200 && res.status < 300,
