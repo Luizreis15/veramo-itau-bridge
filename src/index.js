@@ -665,15 +665,10 @@ app.get('/v1/pix-status', async (req, reply) => {
     return reply.code(502).send({ error: err.message })
   }
 
-  const apiRoot = process.env.ITAU_BASE_URL
-    .replace(/\/pix_recebimentos_conciliacoes.*$/, '')
-    .replace(/\/boletoscash.*$/, '')
-
-  // Tenta os dois endpoints com escopo pix.read / cob.read em ordem
+  // Endpoint correto para Bolecode: pix_recebimentos/v2/cob/{txid}
+  // Nota: secure.api.itau (sem .com.br) — confirmado na implementação de referência
   const pixCandidates = [
-    `${apiRoot}/pix/v2/pix?txid=${encodeURIComponent(txid)}&tamanhoPagina=1`,
-    `${apiRoot}/cob/v2/cob/${encodeURIComponent(txid)}`,
-    `${process.env.ITAU_BASE_URL.replace(/\/$/, '')}/pix?txid=${encodeURIComponent(txid)}&tamanhoPagina=1`,
+    `https://secure.api.itau/pix_recebimentos/v2/cob/${encodeURIComponent(txid)}`,
   ]
 
   app.log.info(`[pix-status] tentando ${pixCandidates.length} endpoints para txid: ${txid.slice(0,8)}...`)
