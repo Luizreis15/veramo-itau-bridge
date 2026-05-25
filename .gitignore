@@ -4,3 +4,5 @@ node_modules/
 *.crt
 *.key
 dist/
+scripts/validate.env
+supabase/.temp/
