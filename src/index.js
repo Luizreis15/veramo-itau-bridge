@@ -745,9 +745,12 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
     return reply.code(500).send({ error: 'ITAU_WEBHOOK_CLIENT_ID ou ITAU_WEBHOOK_CLIENT_SECRET não configurados.' })
   }
 
-  const tiposArray = Array.isArray((req.body || {}).tipo_notificacao)
-    ? (req.body.tipo_notificacao).map(String)
-    : [String((req.body || {}).tipo_notificacao || '01')]
+  // A API espera os valores enum, não códigos numéricos
+  const validTipos = ['BAIXA_EFETIVA', 'BAIXA_OPERACIONAL']
+  const tiposRaw = (req.body || {}).tipos_notificacoes ?? (req.body || {}).tipo_notificacao
+  const tiposArray = Array.isArray(tiposRaw)
+    ? tiposRaw.filter(t => validTipos.includes(t))
+    : validTipos
 
   const webhookUrl      = process.env.ITAU_WEBHOOK_URL      || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-boleto-webhook'
   const webhookOauthUrl = process.env.ITAU_WEBHOOK_OAUTH_URL || 'https://mnlulratuueetbhlywkd.supabase.co/functions/v1/itau-webhook-token'
@@ -759,7 +762,7 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
       webhook_client_id:     webhookClientId,
       webhook_client_secret: webhookClientSecret,
       webhook_oauth_url:     webhookOauthUrl,
-      webhook_oauth_scope:   process.env.ITAU_WEBHOOK_OAUTH_SCOPE || 'boletowebhook',
+      webhook_oauth_scope:   process.env.ITAU_WEBHOOK_OAUTH_SCOPE || 'boletos-notificacao',
       valor_minimo:          Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01'),
       tipos_notificacoes:    tiposArray,
     },
@@ -830,8 +833,15 @@ app.post('/v1/boleto-webhook-register', async (req, reply) => {
     if (existingId && existingUrl !== webhookUrl) {
       app.log.info(`[boleto-webhook-register] PATCH id=${existingId} — atualizando webhook_url`)
       try {
-        await axios.patch(`${url}/${existingId}`, {
-          data: { webhook_url: webhookUrl, webhook_oauth_url: webhookOauthUrl },
+        await axios.patch(`${base}/notificacoes_boletos/${existingId}`, {
+          data: {
+            webhook_url:           webhookUrl,
+            webhook_oauth_url:     webhookOauthUrl,
+            webhook_client_id:     webhookClientId,
+            webhook_client_secret: webhookClientSecret,
+            webhook_oauth_scope:   process.env.ITAU_WEBHOOK_OAUTH_SCOPE || 'boletos-notificacao',
+            valor_minimo:          Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01'),
+          },
         }, {
           headers: {
             'Authorization':        `Bearer ${token}`,
@@ -933,8 +943,17 @@ app.get('/v1/boleto-webhook-check', async (req, reply) => {
 
     app.log.info(`[boleto-webhook-check] PATCH id=${r.id_notificacao_boleto} — atualizando URLs`)
     try {
-      const patchRes = await axios.patch(`${url}/${r.id_notificacao_boleto}`, {
-        data: { webhook_url: currentWebhookUrl, webhook_oauth_url: currentWebhookOauthUrl },
+      const webhookClientId     = process.env.ITAU_WEBHOOK_CLIENT_ID
+      const webhookClientSecret = process.env.ITAU_WEBHOOK_CLIENT_SECRET
+      const patchRes = await axios.patch(`${base}/notificacoes_boletos/${r.id_notificacao_boleto}`, {
+        data: {
+          webhook_url:           currentWebhookUrl,
+          webhook_oauth_url:     currentWebhookOauthUrl,
+          webhook_client_id:     webhookClientId,
+          webhook_client_secret: webhookClientSecret,
+          webhook_oauth_scope:   process.env.ITAU_WEBHOOK_OAUTH_SCOPE || 'boletos-notificacao',
+          valor_minimo:          Number(process.env.ITAU_WEBHOOK_VALOR_MINIMO || '0.01'),
+        },
       }, {
         headers: {
           'Authorization':        `Bearer ${token}`,
