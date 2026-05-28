@@ -534,10 +534,11 @@ app.get('/v1/webhook-check', async (req, reply) => {
 //   1. GET /boletos_pix/{id_boleto_individual}   (provider_charge_id)
 //   2. GET /boletos_pix/{nosso_numero}            (nosso_numero no path)
 //   3. GET /boletos_pix?id_beneficiario=X&codigo_nosso_numero=Y
-// Query: ?nosso_numero=&beneficiario_id=  (+ opcional: &id_boleto=)
+// Query: ?nosso_numero=&beneficiario_id=&codigo_carteira=  (+ opcional: &id_boleto=)
 //
 app.get('/v1/charge-status', async (req, reply) => {
-  const { nosso_numero, beneficiario_id, id_boleto } = req.query ?? {}
+  const { nosso_numero, beneficiario_id, id_boleto, codigo_carteira, carteira_code } = req.query ?? {}
+  const carteira = codigo_carteira ?? carteira_code ?? null
   if (!nosso_numero && !id_boleto) return reply.code(400).send({ error: 'nosso_numero ou id_boleto é obrigatório' })
 
   const agent = buildMtlsAgent()
@@ -549,6 +550,10 @@ app.get('/v1/charge-status', async (req, reply) => {
   const base      = process.env.ITAU_BASE_URL.replace(/\/$/, '')
   // boletoscash é o produto Itaú com escopo de leitura (boletoscash-boleto.read)
   const apiRoot   = base.replace(/\/pix_recebimentos_conciliacoes.*$/, '').replace(/\/boletoscash.*$/, '')
+  const cashHosts = [apiRoot]
+  if (!apiRoot.includes('secure.api.cloud.itau.com.br')) {
+    cashHosts.push(apiRoot.replace(/api\.itau\.com\.br/, 'secure.api.cloud.itau.com.br'))
+  }
   const baseCash  = `${apiRoot}/boletoscash/v2`
   const headers = {
     'Authorization':        `Bearer ${token}`,
@@ -559,6 +564,18 @@ app.get('/v1/charge-status', async (req, reply) => {
   // Candidatos de URL a tentar em ordem.
   // Prioridade: boletoscash/v2 (tem escopo .read) antes de pix_recebimentos (só .write)
   const candidates = []
+  // Documentação Itaú (e-mail Cobrança): GET boletoscash/v2/boletos?view=specific
+  if (nosso_numero && beneficiario_id && carteira) {
+    const boletosQ = [
+      `id_beneficiario=${encodeURIComponent(beneficiario_id)}`,
+      `codigo_carteira=${encodeURIComponent(carteira)}`,
+      `nosso_numero=${encodeURIComponent(nosso_numero)}`,
+      'view=specific',
+    ].join('&')
+    for (const host of cashHosts) {
+      candidates.push(`${host}/boletoscash/v2/boletos?${boletosQ}`)
+    }
+  }
   if (nosso_numero && beneficiario_id) {
     candidates.push(`${baseCash}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&codigo_nosso_numero=${encodeURIComponent(nosso_numero)}`)
     candidates.push(`${baseCash}/boletos_pix?id_beneficiario=${encodeURIComponent(beneficiario_id)}&nosso_numero=${encodeURIComponent(nosso_numero)}`)
@@ -589,7 +606,7 @@ app.get('/v1/charge-status', async (req, reply) => {
     attempts.push({ url, status: res.status })
     app.log.info(`[charge-status] ${url} → HTTP ${res.status} em ${latencyMs}ms`)
     if (res.status !== 404 && res.status !== 405 && res.status !== 403) {
-      return { status_code: res.status, nosso_numero, raw_response: res.data, latency_ms: latencyMs }
+      return { status_code: res.status, nosso_numero, raw_response: res.data, latency_ms: latencyMs, attempts }
     }
   }
 
