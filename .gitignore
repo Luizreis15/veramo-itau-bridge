@@ -5,4 +5,5 @@ node_modules/
 *.key
 dist/
 scripts/validate.env
+scripts/itau-certs/
 supabase/.temp/

@@ -537,8 +537,9 @@ app.get('/v1/webhook-check', async (req, reply) => {
 // Query: ?nosso_numero=&beneficiario_id=&codigo_carteira=  (+ opcional: &id_boleto=)
 //
 app.get('/v1/charge-status', async (req, reply) => {
-  const { nosso_numero, beneficiario_id, id_boleto, codigo_carteira, carteira_code } = req.query ?? {}
-  const carteira = codigo_carteira ?? carteira_code ?? null
+  const { nosso_numero, id_boleto, codigo_carteira, carteira_code } = req.query ?? {}
+  const beneficiario_id = req.query?.beneficiario_id ?? req.query?.id_beneficiario ?? null
+  const carteira = codigo_carteira ?? carteira_code ?? '109'
   if (!nosso_numero && !id_boleto) return reply.code(400).send({ error: 'nosso_numero ou id_boleto é obrigatório' })
 
   const agent = buildMtlsAgent()
@@ -552,7 +553,12 @@ app.get('/v1/charge-status', async (req, reply) => {
   const apiRoot   = base.replace(/\/pix_recebimentos_conciliacoes.*$/, '').replace(/\/boletoscash.*$/, '')
   const cashHosts = [apiRoot]
   if (!apiRoot.includes('secure.api.cloud.itau.com.br')) {
-    cashHosts.push(apiRoot.replace(/api\.itau\.com\.br/, 'secure.api.cloud.itau.com.br'))
+    // ITAU_BASE_URL costuma ser secure.api.itau (sem .com.br) — Postman usa secure.api.cloud.itau.com.br
+    if (/secure\.api\.itau(\/|$)/.test(apiRoot)) {
+      cashHosts.push('https://secure.api.cloud.itau.com.br')
+    } else {
+      cashHosts.push(apiRoot.replace(/api\.itau\.com\.br/, 'secure.api.cloud.itau.com.br'))
+    }
   }
   const baseCash  = `${apiRoot}/boletoscash/v2`
   const headers = {
@@ -630,9 +636,9 @@ app.post('/v1/webhook-register', async (req, reply) => {
   }
 
   // api_base_url no body sobrescreve o default (útil para testar paths alternativos)
-  // Default: ITAU_WEBHOOK_BASE_URL ?? derivado do ITAU_BASE_URL trocando o produto por /pix/v2
+  // Default: ITAU_WEBHOOK_BASE_URL ?? pix_recebimentos/v2 (Postman Itaú / cadastro 201 confirmado)
   const defaultWebhookBase = process.env.ITAU_WEBHOOK_BASE_URL
-    ?? process.env.ITAU_BASE_URL.replace(/pix_recebimentos_conciliacoes\/v2.*$/, 'pix/v2')
+    ?? process.env.ITAU_BASE_URL.replace(/pix_recebimentos_conciliacoes\/v2.*$/, 'pix_recebimentos/v2')
   const base = (api_base_url ?? defaultWebhookBase).replace(/\/$/, '')
   const url  = `${base}/webhook/${encodeURIComponent(pix_key)}`
   app.log.info(`[webhook-register] PUT ${url}`)
