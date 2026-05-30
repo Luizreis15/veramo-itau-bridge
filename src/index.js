@@ -389,6 +389,16 @@ app.post('/v1/charges', async (req, reply) => {
     app.log.warn('[charges] pix_txid vazio no retorno Itaú.')
   }
 
+  const codigoBarrasRaw =
+    dadosIndividuais.codigo_barras
+    ?? dadosIndividuais.numero_codigo_barras
+    ?? dadosIndividuais.codigo_de_barras
+    ?? dadosIndividuais.numero_codigo_de_barras
+    ?? null
+  const codigo_barras = codigoBarrasRaw
+    ? String(codigoBarrasRaw).replace(/\D/g, '').slice(0, 44) || null
+    : null
+
   return {
     success:           true,
     status_code:       statusCode,
@@ -398,6 +408,7 @@ app.post('/v1/charges', async (req, reply) => {
     pix_copy_paste:    dadosQrcode.emv     ?? null,
     pix_qr_code:       dadosQrcode.base64  ?? null,
     boleto_url:        dadosIndividuais.numero_linha_digitavel ?? null,
+    codigo_barras,
     due_date:          dadosIndividuais.data_vencimento        ?? due_date,
     amount,
     latency_ms:        latencyMs,
