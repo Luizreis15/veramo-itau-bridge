@@ -14,8 +14,12 @@ Tag Git: `itau-ho-2026-05-21` (repos `veramo-itau-bridge` e `veramo`).
 ## Aguardando (não bloqueia HO imediata)
 
 - Resposta Itaú sobre webhook pós-liquidação PIX Bolecode → ver `EMAIL_ITAU_WEBHOOK.md`
-- Deploy frontend Vercel (`main`) com commit de UI limpa
 - Revisão das demais telas do sistema
+
+## Concluído após checkpoint
+
+- Deploy frontend Vercel (`veramosaas` / `sistema.veramo.com.br`, UI sem bypass)
+- Consolidação Vercel: projeto único `veramosaas` (removido `veramo-new`)
 
 ## URLs produção
 
