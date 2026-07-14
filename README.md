@@ -98,6 +98,19 @@ curl -s -X POST http://localhost:3001/v1/oauth-test \
 
 ---
 
+## `POST /v1/boleto-baixa`
+
+Baixa (cancela) boleto não pago no Itaú. Ver `veramo/docs/ITAU-BOLETO-BAIXA.md`.
+
+```bash
+curl -sS -X POST http://localhost:3001/v1/boleto-baixa \
+  -H "x-bridge-token: $BRIDGE_ACCESS_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"beneficiario_id":"…","nosso_numero":"12345678","id_boleto":"…"}'
+```
+
+---
+
 ## Fase seguinte
 
 Após `/v1/oauth-test` retornar `success: true`, implementar `/v1/charges` para criação de Bolecode real.
