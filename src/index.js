@@ -1019,14 +1019,13 @@ app.get('/v1/boleto-webhook-check', async (req, reply) => {
 //
 // Baixa (invalida) boleto não pago no Itaú.
 // Body: { beneficiario_id, nosso_numero?, id_boleto?, carteira_code?, correlation_id?, motivo_baixa? }
-// Tenta vários paths (Bolecode / boletoscash / cobrança v2) — mesmo padrão de charge-status.
+// Poucos paths + timeout curto: evita estourar o gateway Supabase (~60–150s) e o browser ("Failed to fetch").
 //
 app.post('/v1/boleto-baixa', async (req, reply) => {
   const body = req.body ?? {}
   const beneficiario_id = body.beneficiario_id ?? body.id_beneficiario ?? null
   const nosso_numero    = body.nosso_numero ? String(body.nosso_numero).replace(/\D/g, '') : null
   const id_boleto       = body.id_boleto ? String(body.id_boleto).trim() : null
-  const carteira        = body.carteira_code ?? body.codigo_carteira ?? '109'
   const motivo          = body.motivo_baixa ?? 'SOLICITACAO_CLIENTE'
   const correlationId   = body.correlation_id ?? randomUUID()
 
@@ -1045,14 +1044,11 @@ app.post('/v1/boleto-baixa', async (req, reply) => {
 
   const base    = process.env.ITAU_BASE_URL.replace(/\/$/, '')
   const apiRoot = base.replace(/\/pix_recebimentos_conciliacoes.*$/, '').replace(/\/boletoscash.*$/, '')
-  const cashHosts = [apiRoot]
-  if (!apiRoot.includes('secure.api.cloud.itau.com.br')) {
-    if (/secure\.api\.itau(\/|$)/.test(apiRoot)) {
-      cashHosts.push('https://secure.api.cloud.itau.com.br')
-    } else {
-      cashHosts.push(apiRoot.replace(/api\.itau\.com\.br/, 'secure.api.cloud.itau.com.br'))
-    }
-  }
+  const cloudHost = /secure\.api\.itau(\/|$)/.test(apiRoot)
+    ? 'https://secure.api.cloud.itau.com.br'
+    : apiRoot.includes('secure.api.cloud.itau.com.br')
+      ? apiRoot
+      : apiRoot.replace(/api\.itau\.com\.br/, 'secure.api.cloud.itau.com.br')
 
   const headers = {
     'Authorization':        `Bearer ${token}`,
@@ -1061,60 +1057,61 @@ app.post('/v1/boleto-baixa', async (req, reply) => {
     'Content-Type':         'application/json',
   }
 
-  const payloads = [
-    { motivo_baixa: motivo },
-    { data: { motivo_baixa: motivo } },
-    { data: { codigo_baixa: '41' } }, // baixa a pedido do beneficiário (legado comum)
-  ]
+  // Um único body — variantes multiplicavam o tempo sem ganho real
+  const payload = { motivo_baixa: motivo }
 
-  /** @type {{ method: string, url: string, payload?: object }[]} */
+  /** @type {{ method: string, url: string }[]} */
   const candidates = []
-  const pushBaixa = (method, url) => {
-    for (const payload of payloads) {
-      candidates.push({ method, url, payload })
-    }
-  }
+  const add = (method, url) => candidates.push({ method, url })
 
+  // Ordem: id_boleto no produto Bolecode → nosso_numero → boletoscash (1 host)
   if (id_boleto) {
-    pushBaixa('PATCH', `${base}/boletos_pix/${encodeURIComponent(id_boleto)}/baixa`)
-    pushBaixa('POST',  `${base}/boletos_pix/${encodeURIComponent(id_boleto)}/baixa`)
-    for (const host of cashHosts) {
-      pushBaixa('PATCH', `${host}/boletoscash/v2/boletos/${encodeURIComponent(id_boleto)}/baixa`)
-      pushBaixa('POST',  `${host}/boletoscash/v2/boletos/${encodeURIComponent(id_boleto)}/baixa`)
-    }
+    add('PATCH', `${base}/boletos_pix/${encodeURIComponent(id_boleto)}/baixa`)
+    add('POST',  `${base}/boletos_pix/${encodeURIComponent(id_boleto)}/baixa`)
   }
   if (nosso_numero) {
-    pushBaixa('PATCH', `${base}/boletos_pix/${encodeURIComponent(nosso_numero)}/baixa`)
-    pushBaixa('POST',  `${base}/boletos_pix/${encodeURIComponent(nosso_numero)}/baixa`)
-    for (const host of cashHosts) {
-      pushBaixa('PATCH', `${host}/boletoscash/v2/boletos/${encodeURIComponent(nosso_numero)}/baixa`)
-      pushBaixa('POST',  `${host}/boletoscash/v2/boletos/${encodeURIComponent(nosso_numero)}/baixa`)
-      pushBaixa('POST',  `${host}/itau-ep9-gtw-cobranca-v2/v2/boletos/${encodeURIComponent(nosso_numero)}/baixa`)
-    }
+    add('POST',  `${base}/boletos_pix/${encodeURIComponent(nosso_numero)}/baixa`)
+    add('PATCH', `${base}/boletos_pix/${encodeURIComponent(nosso_numero)}/baixa`)
+  }
+  if (id_boleto) {
+    add('POST', `${cloudHost}/boletoscash/v2/boletos/${encodeURIComponent(id_boleto)}/baixa`)
+  }
+  if (nosso_numero) {
+    add('POST', `${cloudHost}/boletoscash/v2/boletos/${encodeURIComponent(nosso_numero)}/baixa`)
+    add('POST', `${cloudHost}/itau-ep9-gtw-cobranca-v2/v2/boletos/${encodeURIComponent(nosso_numero)}/baixa`)
   }
 
   const attempts = []
   const startAll = Date.now()
+  const DEADLINE_MS = 45_000
+  const PER_TRY_MS  = 8_000
 
   for (const c of candidates) {
+    if (Date.now() - startAll > DEADLINE_MS) {
+      attempts.push({ stopped: true, reason: 'deadline_45s' })
+      break
+    }
     const start = Date.now()
     let res
     try {
       res = await axios({
         method:         c.method,
         url:            c.url,
-        data:           c.payload,
+        data:           payload,
         headers,
         httpsAgent:     agent,
         validateStatus: () => true,
-        timeout:        20_000,
+        timeout:        PER_TRY_MS,
       })
     } catch (err) {
       attempts.push({ method: c.method, url: c.url, error: err.message })
       continue
     }
     const latencyMs = Date.now() - start
-    attempts.push({ method: c.method, url: c.url, status: res.status, latency_ms: latencyMs })
+    const snippet = typeof res.data === 'object' && res.data
+      ? JSON.stringify(res.data).slice(0, 240)
+      : String(res.data ?? '').slice(0, 240)
+    attempts.push({ method: c.method, url: c.url, status: res.status, latency_ms: latencyMs, body: snippet || undefined })
     app.log.info(`[boleto-baixa] ${c.method} ${c.url} → HTTP ${res.status} em ${latencyMs}ms`)
 
     if (res.status === 200 || res.status === 204 || res.status === 201) {
@@ -1130,13 +1127,24 @@ app.post('/v1/boleto-baixa', async (req, reply) => {
         raw_response:   res.data ?? null,
       })
     }
-    // 404/405/403 → tenta próximo; outros 4xx com body útil ainda tentam alternativas
+
+    // Escopo/credencial: não adianta varrer o restante
+    if (res.status === 401 || res.status === 403) {
+      return reply.code(502).send({
+        ok: false,
+        error: 'Itaú recusou a baixa (HTTP ' + res.status + '). O certificado/app provavelmente não tem escopo de baixa — abra chamado no DevPortal.',
+        nosso_numero,
+        id_boleto,
+        attempts,
+        latency_ms: Date.now() - startAll,
+      })
+    }
   }
 
   app.log.warn(`[boleto-baixa] nenhum path OK | nosso_numero=${nosso_numero} | attempts=${attempts.length}`)
   return reply.code(502).send({
     ok:           false,
-    error:        'Itaú não aceitou a baixa em nenhum path conhecido. Verifique escopo do certificado ou docs/ITAU-BOLETO-BAIXA.md.',
+    error:        'Itaú não aceitou a baixa nos paths conhecidos (pode faltar produto/API de baixa no certificado). Ver docs/ITAU-BOLETO-BAIXA.md.',
     nosso_numero,
     id_boleto,
     attempts,
